@@ -6,7 +6,13 @@ tags:
 - alea
 - legal
 - financial
-date: 2024-03-15
+date: '2024-03-15T00:00:00.000Z'
+license: cc-by-4.0
+language:
+- en
+- es
+- fr
+- de
 ---
 
 # kl3m-003-64k tokenizer
@@ -72,7 +78,7 @@ def get_custom_tokens(
 
 #### Space Preservation
 
-Unlike `kl3m-001-32k`, we *do not* retain the space character as a token.  This was done after adding additional legal 
+Unlike `kl3m-001-32k`, we *do not* retain the space character as a token.  This was done after adding additional legal
 citation tokens to the vocabulary, which reduced the number of issues related to space tokenization in legal text.  This
 means that the `kl3m-003-64k` tokenizer uses substantially fewer tokens than `kl3m-001-32k` for most text.
 
@@ -95,9 +101,9 @@ We also added a number of chat and instruction tokens that were not included in 
 * `<|system|>`: `7`
 * `</|system|>`: `8`
 * `<|user|>`: `9`
-* `</|user|>`: `10` 
+* `</|user|>`: `10`
 * `<|instruction|>`: `11`
-* `</|instruction|>`: `12` 
+* `</|instruction|>`: `12`
 
 ### Replication
 

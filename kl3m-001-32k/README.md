@@ -6,7 +6,10 @@ tags:
 - alea
 - legal
 - financial
-date: 2023-12-28
+date: '2023-12-28T00:00:00.000Z'
+license: cc-by-4.0
+language:
+- en
 ---
 
 # kl3m-001-32k tokenizer
