@@ -14,15 +14,11 @@ if __name__ == "__main__":
  Act [12 U.S.C. 5411]."""
 
     # kl3m-001-32k
-    tokenizer_001 = Tokenizer.from_pretrained(
-        "alea-institute/kl3m-001-32k"
-    )
+    tokenizer_001 = Tokenizer.from_pretrained("alea-institute/kl3m-001-32k")
     tokens_001 = tokenizer_001.encode(SAMPLE_TEXT)
 
     # kl3m-003-64k
-    tokenizer_003 = Tokenizer.from_pretrained(
-        "alea-institute/kl3m-003-64k"
-    )
+    tokenizer_003 = Tokenizer.from_pretrained("alea-institute/kl3m-003-64k")
     tokens_003 = tokenizer_003.encode(SAMPLE_TEXT)
 
     # output original text and each token mapped

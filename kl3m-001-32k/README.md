@@ -44,8 +44,7 @@ As part of our research on efficient and reliable extraction and generation, we 
 a large numer of deterministic "whole" tokens into the tokenizer, such as HTML tags
 like `<span`, common Markdown elements like `#` and `##`, and legal enumerations like `(a)`.
 
-See the `get_custom_tokens` method in `kl3m_embeddings/training/kl3m_001/train_tokenizer.py` for
-more details:
+See `get_custom_tokens` in `kl3m_embeddings/tokenizers/kl3m_001/train_tokenizer.py` on [GitHub](https://github.com/alea-institute/kl3m-embedding-research) for more details:
 
 ```python
 def get_custom_tokens(
@@ -98,8 +97,8 @@ This tokenizer is intended to be used for English language text in professional 
 
 Please see the `kl3m-003-64k` tokenizer for the next iteration of our research on domain-specific tokenization.
 
-In general, the `kl3m-003-64k` tokenizer is recommended over the original `kl3m-001-32k` tokenizer as it is more 
-space-efficient, multilingual, and has a larger vocabulary. However, if you are generating or analyzing short spans of 
+In general, the `kl3m-003-64k` tokenizer is recommended over the original `kl3m-001-32k` tokenizer as it is more
+space-efficient, multilingual, and has a larger vocabulary. However, if you are generating or analyzing short spans of
 text in English, the `kl3m-001-32k` tokenizer may still be preferred.
 
 ```text

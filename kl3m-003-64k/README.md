@@ -48,8 +48,8 @@ in the kl3m-001-32k tokenizer.**  These were primarily sourced from empirical da
 the [Free Law Project's reporters-db](https://raw.githubusercontent.com/freelawproject/reporters-db/main/reporters_db/data/),
 which were added to the tokenizer to improve model behavior related to legal citations.
 
-See the `get_custom_tokens` method in `kl3m_embeddings/training/kl3m_003/train_tokenizer.py` for
-more details:
+See `get_custom_tokens` in `kl3m_embeddings/tokenizers/kl3m_001/train_tokenizer.py` on [GitHub](https://github.com/alea-institute/kl3m-embedding-research) for more details:
+
 
 ```python
 def get_custom_tokens(
@@ -66,7 +66,7 @@ def get_custom_tokens(
 
 #### Space Preservation
 
-Unlike `kl3m-001-32k`, we *do not* retain the space character as a token.  This was done after adding additional legal 
+Unlike `kl3m-001-32k`, we *do not* retain the space character as a token.  This was done after adding additional legal
 citation tokens to the vocabulary, which reduced the number of issues related to space tokenization in legal text.  This
 means that the `kl3m-003-64k` tokenizer uses substantially fewer tokens than `kl3m-001-32k` for most text.
 
@@ -89,9 +89,9 @@ We also added a number of chat and instruction tokens that were not included in 
 * `<|system|>`: `7`
 * `</|system|>`: `8`
 * `<|user|>`: `9`
-* `</|user|>`: `10` 
+* `</|user|>`: `10`
 * `<|instruction|>`: `11`
-* `</|instruction|>`: `12` 
+* `</|instruction|>`: `12`
 
 ### Replication
 
@@ -110,8 +110,8 @@ such as legal and financial documents.
 
 ### Recommendations
 
-In general, the `kl3m-003-64k` tokenizer is recommended over the original `kl3m-001-32k` tokenizer as it is more 
-space-efficient, multilingual, and has a larger vocabulary. However, if you are generating or analyzing short spans of 
+In general, the `kl3m-003-64k` tokenizer is recommended over the original `kl3m-001-32k` tokenizer as it is more
+space-efficient, multilingual, and has a larger vocabulary. However, if you are generating or analyzing short spans of
 text in English, the `kl3m-001-32k` tokenizer may still be preferred.
 
 ```text
