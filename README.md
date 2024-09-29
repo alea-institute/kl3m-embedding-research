@@ -9,7 +9,7 @@ This ALEA project contains the research pipeline for the KL3M tokenizers and emb
 ### Tokenizers
 
 * **kl3m-001-32k**: [README](kl3m-001-32k/README.md)  |  [Hugging Face](https://huggingface.co/alea-institute/kl3m-001-32k)
-* **kl3m-001-64k**: [README](kl3m-001-64k/README.md)  |  [Hugging Face](https://huggingface.co/alea-institute/kl3m-003-64k)
+* **kl3m-001-64k**: [README](kl3m-003-64k/README.md)  |  [Hugging Face](https://huggingface.co/alea-institute/kl3m-003-64k)
 
 ## License
 
