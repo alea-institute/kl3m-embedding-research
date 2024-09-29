@@ -1,6 +1,11 @@
 ---
 library_name: tokenizers
-tags: ['kl3m', 'kl3m-001', 'alea', 'legal', 'financial']
+tags:
+- kl3m
+- kl3m-001
+- alea
+- legal
+- financial
 date: 2023-12-28
 ---
 
@@ -24,7 +29,7 @@ Please see `kl3m-003-64k` for the next iteration of our research on domain-speci
 - **Language(s) (NLP):** English
 - **Developed by:** Originally by [273 Ventures LLC](https://273ventures.com), donated to [ALEA Institute](https://aleainstitute.ai).
 - **License:** [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/)
-- **Successor Model**: [kl3m-003-64k](https://huggingface.co/alea-institute/kl3m-003-64k)
+
 
 ### Model Description
 
@@ -44,7 +49,8 @@ As part of our research on efficient and reliable extraction and generation, we 
 a large numer of deterministic "whole" tokens into the tokenizer, such as HTML tags
 like `<span`, common Markdown elements like `#` and `##`, and legal enumerations like `(a)`.
 
-See `get_custom_tokens` in `kl3m_embeddings/tokenizers/kl3m_001/train_tokenizer.py` on [GitHub](https://github.com/alea-institute/kl3m-embedding-research) for more details:
+See the `get_custom_tokens` method in `kl3m_embeddings/training/kl3m_001/train_tokenizer.py` for
+more details:
 
 ```python
 def get_custom_tokens(
@@ -97,9 +103,7 @@ This tokenizer is intended to be used for English language text in professional 
 
 Please see the `kl3m-003-64k` tokenizer for the next iteration of our research on domain-specific tokenization.
 
-In general, the `kl3m-003-64k` tokenizer is recommended over the original `kl3m-001-32k` tokenizer as it is more
-space-efficient, multilingual, and has a larger vocabulary. However, if you are generating or analyzing short spans of
-text in English, the `kl3m-001-32k` tokenizer may still be preferred.
+In general, the `kl3m-003-64k` tokenizer is recommended over the original `kl3m-001-32k` tokenizer.
 
 ```text
 Original text:  The Comptroller of the Currency shall have the same authority with respect to functions transferred to
@@ -118,21 +122,7 @@ kl3m-003-64k
 Size:  70
 Tokens:  ['The', 'ĠComptroller', 'Ġof', 'Ġthe', 'ĠCurrency', 'Ġshall', 'Ġhave', 'Ġthe', 'Ġsame', 'Ġauthority', 'Ġwith', 'Ġrespect', 'Ġto', 'Ġfunctions', 'Ġtransferred', 'Ġto', 'Ċ', 'Ġthe', 'ĠComptroller', 'Ġof', 'Ġthe', 'ĠCurrency', 'Ġunder', 'Ġthe', 'ĠEnh', 'ancing', 'ĠFinancial', 'ĠInstitution', 'ĠSafety', 'Ġand', 'Ġ', 'Sound', 'ness', 'ĠAct', 'Ġof', 'Ġ2010', 'Ġas', 'Ġwas', 'Ċ', 'Ġvested', 'Ġin', 'Ġthe', 'ĠDirector', 'Ġof', 'Ġthe', 'ĠOffice', 'Ġof', 'ĠThrift', 'ĠSupervision', 'Ġon', 'Ġthe', 'Ġtransfer', 'Ġdate', ',', 'Ġas', 'Ġdefined', 'Ġin', 'Ġsection', 'Ġ311', 'Ġof', 'Ġthat', 'Ċ', 'ĠAct', 'Ġ[', '12', 'Ġ', 'U.S.C.', 'Ġ54', '11', '].']
 IDs:  [671, 13273, 295, 281, 25922, 735, 704, 281, 1913, 2451, 440, 1894, 312, 5860, 7264, 312, 211, 281, 13273, 295, 281, 25922, 621, 281, 18926, 4406, 3195, 24448, 5617, 310, 233, 63589, 2130, 854, 295, 1611, 398, 725, 211, 11978, 300, 281, 2827, 295, 281, 1767, 295, 44029, 37141, 395, 281, 3696, 1548, 24, 398, 3011, 300, 782, 6590, 295, 407, 211, 854, 1327, 524, 233, 63761, 3789, 547, 8578]
-```
 
-**Note that only kl3m-003-64k has any degree of "real" multilingual support:**
-
-```python
-t1 = Tokenizer.from_pretrained('alea-institute/kl3m-001-32k')
-t2 = Tokenizer.from_pretrained('alea-institute/kl3m-003-64k')
-
-text = 'Κανονισμός (ΕΚ) αριθ. 1829/2002 της Επιτροπής'
-
->>> [t1.decode([x]) for x in t1.encode(text).ids]
-['�', '�', 'α', 'ν', 'ο', 'ν', 'ι', '�', '�', 'μ', 'ό', 'ς', ' ', '(', 'Ε', '�', '�', ')', ' ', 'α', 'ρ', 'ι', 'θ', '.', ' ', '1829', '/', '2002', ' ', 'τ', '�', '�', 'ς', ' ', 'Ε', 'π', 'ι', 'τ', 'ρ', 'ο', 'π', 'ή', 'ς']
-
->>> [t2.decode([x]) for x in t2.encode(text).ids]
-['Κανονισμός', ' (', 'ΕΚ', ')', ' αριθ', '.', ' ', '1829', '/', '2002', ' της', ' Επιτροπής']
 ```
 
 ## How to Get Started with the Model
