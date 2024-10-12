@@ -9,25 +9,23 @@ they can be used with the standard DebertaV2 huggingface architecture on the nor
 
 # imports
 import argparse
-from math import log2
-from random import randint, random
 from collections import Counter
+from math import log2
 from pathlib import Path
+from random import randint, random
 from typing import Optional
 
 # packages
 import httpx
 import torch
-from transformers import (
-    DebertaV2Config,
-    PreTrainedTokenizerFast,
-)
+from transformers import DebertaV2Config, PreTrainedTokenizerFast
 
 # project
 from kl3m_embeddings.embeddings.deberta.matroyshka_deberta import (
     MatroyshkaDebertaV2ForMaskedLM,
 )
 from kl3m_embeddings.embeddings.trainer import KL3MTorchTrainer
+from kl3m_embeddings.utils.models import get_model_size_str
 
 # constants
 DEFAULT_TOKENIZER = "alea-institute/kl3m-003-64k"
@@ -76,7 +74,7 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
     def setup_model(
         self,
         tokenizer: PreTrainedTokenizerFast,
-        precision: torch.dtype = torch.bfloat16,
+        precision: Optional[torch.dtype] = None,
     ) -> None:
         """
         Get the model.
@@ -85,6 +83,9 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
             tokenizer (PreTrainedTokenizerFast): The tokenizer.
             precision (torch.dtype): The precision.
         """
+        # get default precision if not passed
+        precision = precision or self.precision
+
         # try to load from the checkpoint path
         if self.checkpoint_path.exists():
             try:
@@ -106,7 +107,7 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
             print("Created new model.")
 
         # set the precision and device
-        self.model.to(device="cuda").to(dtype=precision)
+        self.model.to(device=self.device).to(dtype=precision)
 
     def get_sample(self, device: Optional[str] = "cuda") -> dict[str, torch.Tensor]:
         """
@@ -207,6 +208,11 @@ if __name__ == "__main__":
         tokenizer_name=args.tokenizer_name,
         checkpoint_path=args.checkpoint_path,
     )
+
+    # print key tokenizer and model info
+    print(f"Tokenizer Size: {len(trainer.tokenizer)}")
+    print(f"Model Size: {get_model_size_str(trainer.model)}")
+    print(f"Training Precision: {trainer.precision}")
 
     # train the model
     trainer.train()

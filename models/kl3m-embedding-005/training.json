@@ -1,4 +1,5 @@
 {
+  "precision": "bfloat16",
   "batch_size": 64,
   "endpoint_url": "https://dev.api.data.kl3m.ai/",
   "matroyshka_probability": 0.5,

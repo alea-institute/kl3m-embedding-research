@@ -13,7 +13,7 @@ import json
 import time
 import traceback
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any, Optional
 
 # packages
 import torch.nn
@@ -25,7 +25,6 @@ from transformers.modeling_outputs import MaskedLMOutput
 from kl3m_embeddings.schedulers.linear_warmup_cooldown import (
     LinearWarmupCooldownScheduler,
 )
-
 
 # constants
 DEFAULT_LR = 1e-4
@@ -77,6 +76,13 @@ class KL3MTorchTrainer(abc.ABC):
 
         # load the training config
         self.training_config = self.load_training_config(config_path)
+
+        # set precision
+        self.precision = {
+            "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
+            "float32": torch.float32,
+        }.get(self.training_config.get("precision", "bfloat16"), torch.bfloat16)
 
         # get the tokenizer and model
         self.tokenizer = self.get_tokenizer(tokenizer_name)
@@ -142,7 +148,7 @@ class KL3MTorchTrainer(abc.ABC):
     def setup_model(
         self,
         tokenizer: PreTrainedTokenizerFast,
-        precision: torch.dtype = torch.bfloat16,
+        precision: Optional[torch.dtype] = None,
     ) -> None:
         """
         Load the model.
@@ -373,77 +379,80 @@ class KL3MTorchTrainer(abc.ABC):
         # start training loop
         start_time = time.time()
         train_status = False
-        try:
-            prog_bar = tqdm.tqdm(
-                initial=step,
-                desc="Training",
-                total=steps or total_steps,
-            )
-            while step < (steps or total_steps):
-                # update the entry
-                start_time = time.time()
-                self.current_entry["step"] = step
-                self.current_entry["epoch"] = epoch
-                self.current_entry["lr"] = self.get_lr()
+        with torch.amp.autocast(device_type=self.device, dtype=self.precision):
+            try:
+                prog_bar = tqdm.tqdm(
+                    initial=step,
+                    desc="Training",
+                    total=steps or total_steps,
+                )
+                while step < (steps or total_steps):
+                    # update the entry
+                    start_time = time.time()
+                    self.current_entry["step"] = step
+                    self.current_entry["epoch"] = epoch
+                    self.current_entry["lr"] = self.get_lr()
 
-                # get the sample
-                sample_start_time = time.time()
-                sample = self.get_sample()
-                sample_end_time = time.time()
-                self.current_entry["sample_time"] = sample_end_time - sample_start_time
-
-                # forward pass
-                outputs = self.forward(**sample)
-
-                # backward pass
-                self.backward(outputs.loss)
-
-                if max_grad_norm:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        max_grad_norm,  # type: ignore
+                    # get the sample
+                    sample_start_time = time.time()
+                    sample = self.get_sample()
+                    sample_end_time = time.time()
+                    self.current_entry["sample_time"] = (
+                        sample_end_time - sample_start_time
                     )
 
-                # step optimizer
-                self.step()
+                    # forward pass
+                    outputs = self.forward(**sample)
 
-                # log training metrics
-                if step % steps_per_save == 0:
-                    self.save()
+                    # backward pass
+                    self.backward(outputs.loss)
 
-                # get final time
-                end_time = time.time()
-                self.current_entry["step_time"] = end_time - start_time
+                    if max_grad_norm:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),  # type: ignore
+                            max_grad_norm,  # type: ignore
+                        )
 
-                # get trailing loss
-                prog_bar.set_postfix(
-                    {
-                        "loss": f"{self.current_entry.get("loss", 99.9):0.2f}",
-                        "loss_100": f"{self.get_trailing_loss(100):0.3f}",
-                        "loss_1000": f"{self.get_trailing_loss(1000):0.3f}",
-                        "lr": f"{self.get_lr():1.1e}",
-                        "step_time": f"{self.current_entry['step_time']:0.2f}",
-                    }
-                )
+                    # step optimizer
+                    self.step()
 
-                # log the entry
-                self.log()
+                    # log training metrics
+                    if step % steps_per_save == 0:
+                        self.save()
 
-                # inc the epoch
-                if step % steps_per_epoch == 0:
-                    epoch += 1
+                    # get final time
+                    end_time = time.time()
+                    self.current_entry["step_time"] = end_time - start_time
 
-                step += 1
-                prog_bar.update(1)
+                    # get trailing loss
+                    prog_bar.set_postfix(
+                        {
+                            "loss": f"{self.current_entry.get("loss", 99.9):0.2f}",
+                            "loss_100": f"{self.get_trailing_loss(100):0.3f}",
+                            "loss_1000": f"{self.get_trailing_loss(1000):0.3f}",
+                            "lr": f"{self.get_lr():1.1e}",
+                            "step_time": f"{self.current_entry['step_time']:0.2f}",
+                        }
+                    )
 
-            train_status = True
-        except KeyboardInterrupt:
-            print("Interrupted training")
-        except Exception as e:  # pylint: disable=broad-except
-            print(f"Error during training: {e}")
-            traceback.print_exc()
-        finally:
-            # final save
-            self.save()
+                    # log the entry
+                    self.log()
+
+                    # inc the epoch
+                    if step % steps_per_epoch == 0:
+                        epoch += 1
+
+                    step += 1
+                    prog_bar.update(1)
+
+                train_status = True
+            except KeyboardInterrupt:
+                print("Interrupted training")
+            except Exception as e:  # pylint: disable=broad-except
+                print(f"Error during training: {e}")
+                traceback.print_exc()
+            finally:
+                # final save
+                self.save()
 
         return train_status
