@@ -7,9 +7,10 @@ import argparse
 import json
 from pathlib import Path
 
+
 # packages
-import polars as pl
 import matplotlib.pyplot as plt
+import polars as pl
 import seaborn as sns
 
 
@@ -104,6 +105,10 @@ def plot_loss_by_step(df: pl.DataFrame) -> Path:
     loss_data = df.select(["step", "loss"]).to_pandas()
     loss_data["moving_avg"] = loss_data["loss"].rolling(100).mean()
     sns.lineplot(x="step", y="moving_avg", data=loss_data, color="red")
+
+    # make it log log via axes
+    plt.yscale("log")
+    plt.xscale("log")
 
     # add a horizontal line and label for the final moving average value
     final_avg = loss_data["moving_avg"].iloc[-1]
