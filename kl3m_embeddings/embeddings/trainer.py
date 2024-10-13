@@ -8,8 +8,12 @@ pure torch, accelerate, deepspeed, etc.
 
 # imports
 import abc
+import concurrent.futures
 import datetime
 import json
+import logging
+import os
+import queue
 import time
 import traceback
 from pathlib import Path
@@ -25,6 +29,7 @@ from transformers.modeling_outputs import MaskedLMOutput
 from kl3m_embeddings.schedulers.linear_warmup_cooldown import (
     LinearWarmupCooldownScheduler,
 )
+from kl3m_embeddings.utils.logger import get_logger
 
 # constants
 DEFAULT_LR = 1e-4
@@ -36,6 +41,7 @@ DEFAULT_ENDPOINT = "http://localhost:8000"
 DEFAULT_MAX_GRAD_NORM = 1.0
 
 
+# pylint: disable=too-many-instance-attributes,too-many-positional-arguments
 class KL3MTorchTrainer(abc.ABC):
     """
     Base KL3M torch-only trainer class that wraps:
@@ -57,6 +63,7 @@ class KL3MTorchTrainer(abc.ABC):
         tokenizer_name: str,
         checkpoint_path: Optional[Path] = None,
         device: str = "cuda",
+        num_workers: int = 4,
     ):
         """
         Initialize the KL3MTrainer.
@@ -66,7 +73,14 @@ class KL3MTorchTrainer(abc.ABC):
             checkpoint_path (Path): The path to save model checkpoints.
             tokenizer_name (str): The name of the tokenizer.
             device (str): The device to use.
+            num_workers (int): The number of workers to use in background tasks.
         """
+        # create an instance logger with the class name
+        self.logger = get_logger(self.__class__.__name__)
+        self.global_rank = int(os.getenv("RANK", "0"))
+        self.local_rank = int(os.getenv("LOCAL_RANK", "0"))
+        self.world_size = int(os.getenv("WORLD_SIZE", "1"))
+
         # get the config and checkpoint paths
         self.config_path = config_path
         self.checkpoint_path = checkpoint_path or config_path
@@ -105,9 +119,39 @@ class KL3MTorchTrainer(abc.ABC):
         self.log_file = self.log_path.open("at+")
 
         # setup log entry structures
-        self.current_entry: dict[str, Any] = {}
-        self.logs: list[dict] = []
+        self.step_entry: dict[str, Any] = {}
+        self.step_logs: list[dict] = []
         self.loss_ts: list[float] = []
+
+        # set up optional sample queue for models that can lookahead
+        # NB: be careful if you increase this ratio, as extra samples are stored on the target device
+        # by default and you may thus OOM VRAM unexpectedly.
+        self.sample_queue: queue.Queue[dict] = queue.Queue(maxsize=num_workers * 2)
+
+        # set up a default thread pool for sampling
+        self.sample_thread_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=num_workers,
+            thread_name_prefix="kl3m_trainer",
+        )
+
+    # match log args format with level
+    def log(self, message: str, *args, level: str = "info") -> None:
+        """
+        Log a message.
+
+        Args:
+            message (str): The message.
+            *args: The arguments.
+            level (str): The log level.
+
+        Returns:
+            None
+        """
+        self.logger.log(
+            getattr(logging, level.upper()),
+            f"rank={self.global_rank}.{self.local_rank}/{self.world_size}: {message}",
+            *args,
+        )
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """
@@ -117,7 +161,12 @@ class KL3MTorchTrainer(abc.ABC):
         try:
             self.log_file.close()
         except Exception as e:  # pylint: disable=broad-except
-            print(f"Error closing log file during cleanup: {str(e)}")
+            self.logger.error("Error closing log file: %s", str(e))
+
+        try:
+            self.sample_thread_pool.shutdown()
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.error("Error closing thread pool: %s", str(e))
 
     @staticmethod
     def load_training_config(config_path: Path) -> dict:
@@ -142,7 +191,12 @@ class KL3MTorchTrainer(abc.ABC):
         Returns:
             PreTrainedTokenizerFast: The tokenizer.
         """
-        return AutoTokenizer.from_pretrained(tokenizer_name)
+        self.log("Loading tokenizer %s", tokenizer_name)
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        self.log(
+            "Loaded tokenizer %s with vocab size=%d", tokenizer_name, len(tokenizer)
+        )
+        return tokenizer
 
     @abc.abstractmethod
     def setup_model(
@@ -173,6 +227,7 @@ class KL3MTorchTrainer(abc.ABC):
             lr=self.training_config.get("optimizer", {}).get("peak_lr", DEFAULT_LR),
             fused=self.training_config.get("optimizer", {}).get("fused", True),
         )
+        self.log("Initialized optimizer: %s", self.optimizer)
 
     def setup_scheduler(
         self,
@@ -197,6 +252,7 @@ class KL3MTorchTrainer(abc.ABC):
             ),  # default to half of total steps
             total_steps=optimizer_config.get("total_steps", DEFAULT_TOTAL_STEPS),
         )
+        self.log("Initialized scheduler: %s", self.scheduler)
 
     def get_lr(self) -> float:
         """
@@ -207,18 +263,18 @@ class KL3MTorchTrainer(abc.ABC):
         """
         return self.scheduler.get_last_lr()[0]  # type: ignore
 
-    def log(self) -> None:
+    def log_step(self) -> None:
         """
         Log the current entry to internal and external file log.
         """
         # add time if not there
-        if "time" not in self.current_entry:
-            self.current_entry["time"] = datetime.datetime.now().isoformat()
+        if "time" not in self.step_entry:
+            self.step_entry["time"] = datetime.datetime.now().isoformat()
 
         # add to list
-        self.logs.append(self.current_entry)
-        self.log_file.write(json.dumps(self.current_entry, default=str) + "\n")
-        self.current_entry.clear()
+        self.step_logs.append(self.step_entry)
+        self.log_file.write(json.dumps(self.step_entry, default=str) + "\n")
+        self.step_entry.clear()
         self.log_file.flush()
 
     def get_trailing_loss(self, steps: int = 10) -> float:
@@ -247,17 +303,27 @@ class KL3MTorchTrainer(abc.ABC):
         # track timing
         start_time = time.time()
 
+        # log begin
+        self.log("Beginning forward pass")
+
         # get the model outputs
         output = self.model.forward(**inputs)  # type: ignore
 
         # set loss into current entry
         self.loss_ts.append(output.loss.detach().item())
-        self.current_entry["loss"] = self.loss_ts[-1]
+        self.step_entry["loss"] = self.loss_ts[-1]
 
         # track timing
         end_time = time.time()
 
-        self.current_entry["forward_time"] = end_time - start_time
+        self.step_entry["forward_time"] = end_time - start_time
+
+        # log end
+        self.log(
+            "Completed forward pass with loss=%0.2f in %0.2f seconds",
+            self.step_entry["loss"],
+            self.step_entry["forward_time"],
+        )
 
         return output
 
@@ -268,6 +334,9 @@ class KL3MTorchTrainer(abc.ABC):
         Args:
             loss (torch.Tensor): The loss.
         """
+        # log it
+        self.log("Beginning backward pass with loss=%0.2f", loss)
+
         # track timing
         start_time = time.time()
 
@@ -277,14 +346,23 @@ class KL3MTorchTrainer(abc.ABC):
         # track timing
         end_time = time.time()
 
-        self.current_entry["backward_time"] = end_time - start_time
+        # log it
+        self.log("Completed backward pass in %0.2f seconds", end_time - start_time)
+
+        self.step_entry["backward_time"] = end_time - start_time
 
     def step(self) -> None:
         """
         Step the optimizer.
+
+        Returns:
+            None
         """
         # track timing
         start_time = time.time()
+
+        # log
+        self.log("Beginning optimizer step")
 
         # step the optimizer
         self.optimizer.step()  # type: ignore
@@ -296,14 +374,19 @@ class KL3MTorchTrainer(abc.ABC):
         # track timing
         end_time = time.time()
 
-        self.current_entry["optimizer_time"] = end_time - start_time
+        # log it
+        self.log("Completed optimizer step in %0.2f seconds", end_time - start_time)
+
+        self.step_entry["optimizer_time"] = end_time - start_time
 
     def save(self) -> None:
         """
         Save the model.
         """
         # save the model
+        self.log("Saving model to %s", self.checkpoint_path)
         self.model.save_pretrained(self.checkpoint_path)  # type: ignore
+        self.log("Saving tokenizer to %s", self.checkpoint_path)
         self.tokenizer.save_pretrained(self.checkpoint_path)  # type: ignore
 
     @abc.abstractmethod
@@ -318,6 +401,32 @@ class KL3MTorchTrainer(abc.ABC):
             Any: The sample.
         """
 
+    def populate_queue(self) -> None:
+        """
+        Populate the sample queue.
+        """
+        try:
+            self.sample_queue.put(self.get_sample(), timeout=30.0)
+        except Exception as e:  # pylint: disable=broad-except
+            self.log("Error adding sampel to queue: %s", str(e), level="error")
+
+    def get_next_sample(self) -> dict[str, torch.Tensor]:
+        """
+        Get the next sample from the queue.
+
+        Returns:
+            dict[str, torch.Tensor]: The sample.
+        """
+        while True:
+            try:
+                self.log("Queue size: %d", self.sample_queue.qsize())
+                return self.sample_queue.get(timeout=1)
+            except queue.Empty:
+                self.log(
+                    "Sample queue empty, hitting get_sample() directly", level="warning"
+                )
+                return self.get_sample()
+
     def load_state(self, checkpoint_path: Path) -> dict[str, int]:
         """
         Load the model state from a checkpoint.
@@ -331,21 +440,24 @@ class KL3MTorchTrainer(abc.ABC):
         epoch = 0
         log_file_path = checkpoint_path / "log.jsonl"
         if checkpoint_path.exists() and log_file_path.exists():
+            self.log("Loading log file %s", log_file_path)
             try:
                 log_contents = log_file_path.read_text()
                 for line in log_contents.strip().splitlines():
                     entry = json.loads(line)
-                    self.logs.append(entry)
+                    self.step_logs.append(entry)
                     self.loss_ts.append(entry["loss"])
 
                 # get the step and epoch from the final entry
-                step = self.logs[-1]["step"] + 1
-                epoch = self.logs[-1]["epoch"]
+                step = self.step_logs[-1]["step"] + 1
+                epoch = self.step_logs[-1]["epoch"]
+                self.log("Reloaded state from log file: step=%d, epoch=%d", step, epoch)
             except Exception as e:  # pylint: disable=broad-except
                 print(f"Error loading log file: {str(e)}")
 
         return {"step": step, "epoch": epoch}
 
+    # pylint: disable=too-many-statements
     def train(self, steps: Optional[int] = None) -> bool:
         """
         Train the model.
@@ -356,6 +468,10 @@ class KL3MTorchTrainer(abc.ABC):
         Returns:
             bool: Whether the training was successful.
         """
+        # start populating the queue
+        for _ in range(self.sample_queue.maxsize):
+            self.sample_thread_pool.submit(self.populate_queue)
+
         # get key training params
         steps_per_epoch = self.training_config.get(
             "steps_per_epoch", DEFAULT_STEPS_PER_EPOCH
@@ -379,6 +495,9 @@ class KL3MTorchTrainer(abc.ABC):
         # start training loop
         start_time = time.time()
         train_status = False
+
+        # wait to put the model into the right device until now
+        self.model.to(self.device)  # type: ignore
         with torch.amp.autocast(device_type=self.device, dtype=self.precision):
             try:
                 prog_bar = tqdm.tqdm(
@@ -387,19 +506,24 @@ class KL3MTorchTrainer(abc.ABC):
                     total=steps or total_steps,
                 )
                 while step < (steps or total_steps):
+                    # log
+                    self.log("Beginning step %d", step)
+
+                    # populate more samples in the thread pool
+                    for _ in range(self.sample_queue.maxsize):
+                        self.sample_thread_pool.submit(self.populate_queue)
+
                     # update the entry
                     start_time = time.time()
-                    self.current_entry["step"] = step
-                    self.current_entry["epoch"] = epoch
-                    self.current_entry["lr"] = self.get_lr()
+                    self.step_entry["step"] = step
+                    self.step_entry["epoch"] = epoch
+                    self.step_entry["lr"] = self.get_lr()
 
                     # get the sample
                     sample_start_time = time.time()
-                    sample = self.get_sample()
+                    sample = self.get_next_sample()
                     sample_end_time = time.time()
-                    self.current_entry["sample_time"] = (
-                        sample_end_time - sample_start_time
-                    )
+                    self.step_entry["sample_time"] = sample_end_time - sample_start_time
 
                     # forward pass
                     outputs = self.forward(**sample)
@@ -422,21 +546,21 @@ class KL3MTorchTrainer(abc.ABC):
 
                     # get final time
                     end_time = time.time()
-                    self.current_entry["step_time"] = end_time - start_time
+                    self.step_entry["step_time"] = end_time - start_time
 
                     # get trailing loss
                     prog_bar.set_postfix(
                         {
-                            "loss": f"{self.current_entry.get("loss", 99.9):0.2f}",
+                            "loss": f"{self.step_entry.get("loss", 99.9):0.2f}",
                             "loss_100": f"{self.get_trailing_loss(100):0.3f}",
                             "loss_1000": f"{self.get_trailing_loss(1000):0.3f}",
                             "lr": f"{self.get_lr():1.1e}",
-                            "step_time": f"{self.current_entry['step_time']:0.2f}",
+                            "step_time": f"{self.step_entry['step_time']:0.2f}",
                         }
                     )
 
                     # log the entry
-                    self.log()
+                    self.log_step()
 
                     # inc the epoch
                     if step % steps_per_epoch == 0:
@@ -445,12 +569,17 @@ class KL3MTorchTrainer(abc.ABC):
                     step += 1
                     prog_bar.update(1)
 
+                    # log it
+                    self.log("Completed step %d", step)
+
                 train_status = True
             except KeyboardInterrupt:
                 print("Interrupted training")
             except Exception as e:  # pylint: disable=broad-except
                 print(f"Error during training: {e}")
                 traceback.print_exc()
+                self.log("Error during training: %s", str(e), level="error")
+                self.log(traceback.format_exc(), level="error")
             finally:
                 # final save
                 self.save()

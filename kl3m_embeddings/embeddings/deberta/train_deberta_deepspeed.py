@@ -1,6 +1,6 @@
 """
-Train a kl3m deberta model with given configuration on a single node, single GPU setup
-with pure torch.  transformers is only used to load the model architecture and tokenizer.
+Train a kl3m deberta model with given configuration using deepspeed, which supports
+both distributed training and various optimization and parallelization strategies.
 
 Note that these models are trained with Matroyshka-style dimensionality reduction, but
 they can be used with the standard DebertaV2 huggingface architecture on the normal
@@ -24,7 +24,7 @@ from transformers import DebertaV2Config, PreTrainedTokenizerFast
 from kl3m_embeddings.embeddings.deberta.matroyshka_deberta import (
     MatroyshkaDebertaV2ForMaskedLM,
 )
-from kl3m_embeddings.embeddings.trainer import KL3MTorchTrainer
+from kl3m_embeddings.embeddings.deepspeed_trainer import KL3MDeepspeedTrainer
 from kl3m_embeddings.utils.models import get_model_size_str
 
 # constants
@@ -32,7 +32,7 @@ DEFAULT_TOKENIZER = "alea-institute/kl3m-003-64k"
 DEFAULT_ENDPOINT = "http://localhost:8000"
 
 
-class KL3MDebertaTrainer(KL3MTorchTrainer):
+class KL3MDeepspeedDebertaTrainer(KL3MDeepspeedTrainer):
     """
     Trainer for kl3m deberta model.
     """
@@ -96,6 +96,7 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
                 self.model = MatroyshkaDebertaV2ForMaskedLM.from_pretrained(
                     self.checkpoint_path,
                 )
+                self.model.train()
                 self.log("Loaded model from checkpoint.")
             except Exception as e:  # pylint: disable=broad-except
                 self.log(
@@ -104,16 +105,14 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
 
         if self.model is None:
             # load from config path
-            c2 = DebertaV2Config.from_pretrained(self.config_path)
+            model_config = DebertaV2Config.from_pretrained(self.config_path)
 
             # set the vocab size and max position embeddings
-            c2.vocab_size = len(self.tokenizer)
-            self.model = MatroyshkaDebertaV2ForMaskedLM(c2)
+            model_config.vocab_size = len(self.tokenizer)
+            self.model = MatroyshkaDebertaV2ForMaskedLM(model_config)
+            self.model.train()
 
             self.log("Loaded model from config.")
-
-        # set the precision and device
-        self.model.to(dtype=precision)
 
     def get_sample(self, device: Optional[str] = "cuda") -> dict[str, torch.Tensor]:
         """
@@ -122,7 +121,7 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
         Returns:
             dict[str, torch.Tensor]: The sample.
         """
-        # get url and request an MLM batch
+        # get url and request
         mlm_url = f"{self.endpoint_url.rstrip('/')}/batch/mlm"
         mlm_post_body = {
             "batch_size": self.training_config.get("batch_size", 1),
@@ -211,7 +210,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # create the trainer
-    trainer = KL3MDebertaTrainer(
+    trainer = KL3MDeepspeedDebertaTrainer(
         config_path=args.config_path,
         tokenizer_name=args.tokenizer_name,
         checkpoint_path=args.checkpoint_path,

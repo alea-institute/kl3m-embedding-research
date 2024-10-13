@@ -41,6 +41,8 @@ tokenizers = "^0.20.0"
 
 # only used in kl3m-001
 orjsonl = {version = "^1.0.0", optional = true}
+deepspeed = "^0.15.2"
+mpi4py = "^4.0.1"
 
 
 [tool.poetry.group.dev.dependencies]

@@ -1,0 +1,31 @@
+{
+  "precision": "bfloat16",
+  "batch_size": 64,
+  "endpoint_url": "https://dev.api.data.kl3m.ai/",
+  "matroyshka_probability": 0.5,
+  "steps_per_epoch": 1000000,
+  "steps_per_save": 1000,
+  "optimizer": {
+    "peak_lr": 0.0005,
+    "warmup_steps": 10000,
+    "peak_steps": 990000,
+    "total_steps": 2000000,
+    "max_grad_norm": 8.0
+  },
+  "deepspeed": {
+    "optimizer_type": "fused_adamw",
+    "gradient_accumulation_steps": 1,
+    "bf16": {
+      "enabled": true
+    },
+    "zero_optimization": {
+      "stage": 1,
+      "allgather_partitions": true,
+      "allgather_bucket_size": 16777216,
+      "overlap_comm": true,
+      "reduce_scatter": true,
+      "reduce_bucket_size": 16777216,
+      "contiguous_gradients": true
+    }
+  }
+}
