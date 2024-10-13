@@ -7,7 +7,6 @@ import argparse
 import json
 from pathlib import Path
 
-
 # packages
 import matplotlib.pyplot as plt
 import polars as pl
@@ -81,12 +80,13 @@ def calculate_statistics(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def plot_loss_by_step(df: pl.DataFrame) -> Path:
+def plot_loss_by_step(df: pl.DataFrame, x_min: int = 1000) -> Path:
     """
     Plot the loss by step.
 
     Args:
         df (pl.DataFrame): The training log data.
+        x_min (int): The minimum x-axis value to plot.
 
     Returns:
         Path: The path to the plot.
@@ -105,6 +105,10 @@ def plot_loss_by_step(df: pl.DataFrame) -> Path:
     loss_data = df.select(["step", "loss"]).to_pandas()
     loss_data["moving_avg"] = loss_data["loss"].rolling(100).mean()
     sns.lineplot(x="step", y="moving_avg", data=loss_data, color="red")
+
+    # check if we have at least x_min steps
+    if loss_data["step"].iloc[-1] > x_min:
+        plt.xlim(x_min, loss_data["step"].iloc[-1])
 
     # make it log log via axes
     plt.yscale("log")
@@ -128,12 +132,13 @@ def plot_loss_by_step(df: pl.DataFrame) -> Path:
     return plot_path
 
 
-def plot_step_time_components(df: pl.DataFrame) -> Path:
+def plot_step_time_components(df: pl.DataFrame, y_max_qt: float = 0.99) -> Path:
     """
     Plot the step time components.
 
     Args:
         df (pl.DataFrame): The training log data.
+        y_max_qt (float): The quantile to use for the y-axis max value.
 
     Returns:
         Path: The path to the plot.
@@ -152,6 +157,10 @@ def plot_step_time_components(df: pl.DataFrame) -> Path:
     plt.xlabel("Step")
     plt.ylabel("Time (seconds)")
     plt.legend(loc="upper left", bbox_to_anchor=(1, 1))
+
+    # set the y max to the quantile value of the sums plus 10% headspace
+    qt_value = step_time_data.sum(axis=1).quantile(y_max_qt)
+    plt.ylim(0, qt_value * 1.1)
 
     # save the plot
     plot_path = Path("step_time_components.png")
