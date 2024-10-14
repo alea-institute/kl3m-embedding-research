@@ -132,7 +132,7 @@ class KL3MDeepspeedDebertaTrainer(KL3MDeepspeedTrainer):
         while True:
             try:
                 response = self.endpoint_client.post(
-                    mlm_url, json=mlm_post_body, timeout=0.1
+                    mlm_url, json=mlm_post_body, timeout=1.0
                 )
                 if response.status_code == 200:
                     break
