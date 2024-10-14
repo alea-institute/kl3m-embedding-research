@@ -89,13 +89,15 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
         """
         # get default precision if not passed
         precision = precision or self.precision
+        self.log("Using precision: %s", precision)
 
         # try to load from the checkpoint path
         if self.checkpoint_path.exists():
             try:
                 self.model = MatroyshkaDebertaV2ForMaskedLM.from_pretrained(
                     self.checkpoint_path,
-                ).to(dtype=precision)
+                    torch_dtype=precision,
+                )
                 self.log("Loaded model from checkpoint.")
             except Exception as e:  # pylint: disable=broad-except
                 self.log(
@@ -104,13 +106,21 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
 
         if self.model is None:
             # load from config path
-            c2 = DebertaV2Config.from_pretrained(self.config_path)
+            model_config = DebertaV2Config.from_pretrained(
+                self.config_path,
+                torch_dtype=precision,
+            )
 
             # set the vocab size and max position embeddings
-            c2.vocab_size = len(self.tokenizer)
-            self.model = MatroyshkaDebertaV2ForMaskedLM(c2).to(dtype=precision)
+            model_config.vocab_size = len(self.tokenizer)
+            self.model = MatroyshkaDebertaV2ForMaskedLM(model_config)
+            self.model.train()
+
             self.log("Created model from config.")
 
+        # set the model to the device and precision
+        self.model.train()
+        self.model.to(dtype=precision).to(self.device)
 
     def get_sample(self, device: Optional[str] = "cpu") -> dict[str, torch.Tensor]:
         """

@@ -516,7 +516,6 @@ class KL3MTorchTrainer(abc.ABC):
         train_status = False
 
         # wait to put the model into the right device until now
-        self.model.to(self.device)  # type: ignore
         with torch.amp.autocast(device_type=self.device, dtype=self.precision):
             try:
                 prog_bar = tqdm.tqdm(
