@@ -439,7 +439,8 @@ class KL3MTorchTrainer(abc.ABC):
             try:
                 for key in sample:
                     if isinstance(sample[key], torch.Tensor):
-                        sample[key].to(self.device)
+                        if sample[key].device != self.device:
+                            sample[key] = sample[key].to(self.device)
             except Exception as e:  # pylint: disable=broad-except
                 self.log("Error moving sample to device: %s", str(e), level="error")
 
