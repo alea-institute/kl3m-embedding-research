@@ -114,7 +114,7 @@ class KL3MDeepspeedDebertaTrainer(KL3MDeepspeedTrainer):
 
             self.log("Loaded model from config.")
 
-    def get_sample(self, device: Optional[str] = "cuda") -> dict[str, torch.Tensor]:
+    def get_sample(self, device: Optional[str] = "cpu") -> dict[str, torch.Tensor]:
         """
         Get a sample for training.
 

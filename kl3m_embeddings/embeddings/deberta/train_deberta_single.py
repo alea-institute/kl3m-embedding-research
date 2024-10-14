@@ -115,7 +115,7 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
         # set the precision and device
         self.model.to(dtype=precision)
 
-    def get_sample(self, device: Optional[str] = "cuda") -> dict[str, torch.Tensor]:
+    def get_sample(self, device: Optional[str] = "cpu") -> dict[str, torch.Tensor]:
         """
         Get a sample for training.
 

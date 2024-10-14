@@ -64,7 +64,7 @@ class KL3MTorchTrainer(abc.ABC):
         tokenizer_name: str,
         checkpoint_path: Optional[Path] = None,
         device: str = "cuda",
-        num_workers: int = 4,
+        num_workers: int = 2,
     ):
         """
         Initialize the KL3MTrainer.
@@ -127,7 +127,7 @@ class KL3MTorchTrainer(abc.ABC):
         # set up optional sample queue for models that can lookahead
         # NB: be careful if you increase this ratio, as extra samples are stored on the target device
         # by default and you may thus OOM VRAM unexpectedly.
-        self.sample_queue: queue.Queue[dict] = queue.Queue(maxsize=num_workers * 2)
+        self.sample_queue: queue.Queue[dict] = queue.Queue(maxsize=num_workers)
 
         # set up a default thread pool for sampling
         self.sample_thread_pool = concurrent.futures.ThreadPoolExecutor(
@@ -421,16 +421,29 @@ class KL3MTorchTrainer(abc.ABC):
         while True:
             try:
                 self.log("Queue size: %d", self.sample_queue.qsize())
-                return self.sample_queue.get(timeout=1)
+                sample = self.sample_queue.get(timeout=1)
             except queue.Empty:
                 self.log(
                     "Sample queue empty, hitting get_sample() directly", level="warning"
                 )
-                return self.get_sample()
-            except Exception as e:
+
+                # get next sample from queue
+                sample = self.get_sample()
+            except Exception as e:  # pylint: disable=broad-except
                 # sleep and try again
                 self.log("Error getting sample from queue: %s", str(e), level="error")
                 time.sleep(DEFAULT_SAMPLE_SLEEP)
+                continue
+
+            # now move onto the right device
+            try:
+                for key in sample:
+                    if isinstance(sample[key], torch.Tensor):
+                        sample[key] = sample[key].to(self.device)
+            except Exception as e:  # pylint: disable=broad-except
+                self.log("Error moving sample to device: %s", str(e), level="error")
+
+            return sample
 
     def load_state(self, checkpoint_path: Path) -> dict[str, int]:
         """

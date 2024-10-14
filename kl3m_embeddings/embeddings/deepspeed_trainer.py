@@ -37,7 +37,7 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         tokenizer_name: str,
         checkpoint_path: Optional[Path] = None,
         device: str = "cuda",
-        num_workers: int = 4,
+        num_workers: int = 2,
     ):
         """
         Initialize the KL3MTrainer.
