@@ -39,6 +39,7 @@ DEFAULT_STEPS_PER_EPOCH = 1000000
 DEFAULT_STEPS_PER_SAVE = 10
 DEFAULT_ENDPOINT = "http://localhost:8000"
 DEFAULT_MAX_GRAD_NORM = 1.0
+DEFAULT_SAMPLE_SLEEP = 10.0
 
 
 # pylint: disable=too-many-instance-attributes,too-many-positional-arguments
@@ -408,7 +409,7 @@ class KL3MTorchTrainer(abc.ABC):
         try:
             self.sample_queue.put(self.get_sample(), timeout=30.0)
         except Exception as e:  # pylint: disable=broad-except
-            self.log("Error adding sampel to queue: %s", str(e), level="error")
+            self.log("Error adding sample to queue: %s", str(e), level="error")
 
     def get_next_sample(self) -> dict[str, torch.Tensor]:
         """
@@ -426,6 +427,10 @@ class KL3MTorchTrainer(abc.ABC):
                     "Sample queue empty, hitting get_sample() directly", level="warning"
                 )
                 return self.get_sample()
+            except Exception as e:
+                # sleep and try again
+                self.log("Error getting sample from queue: %s", str(e), level="error")
+                time.sleep(DEFAULT_SAMPLE_SLEEP)
 
     def load_state(self, checkpoint_path: Path) -> dict[str, int]:
         """
