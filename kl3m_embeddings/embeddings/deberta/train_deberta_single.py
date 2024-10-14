@@ -109,8 +109,7 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
             # set the vocab size and max position embeddings
             c2.vocab_size = len(self.tokenizer)
             self.model = MatroyshkaDebertaV2ForMaskedLM(c2).to(dtype=precision)
-
-            self.log("Loaded model from config.")
+            self.log("Created model from config.")
 
 
     def get_sample(self, device: Optional[str] = "cpu") -> dict[str, torch.Tensor]:
