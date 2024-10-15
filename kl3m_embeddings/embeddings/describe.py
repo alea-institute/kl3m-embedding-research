@@ -96,15 +96,20 @@ def plot_loss_by_step(df: pl.DataFrame, x_min: int = 1000) -> Path:
     plt.figure(figsize=(12, 8))
 
     # plot loss by step with 50% transparency
-    sns.lineplot(x="step", y="loss", data=df.to_pandas(), alpha=0.5)
+    sns.lineplot(x="step", y="loss", data=df.to_pandas(), alpha=0.25)
     plt.title("Loss by Step")
     plt.xlabel("Step")
     plt.ylabel("Loss")
 
     # now get the 100-step moving average loss and plot it
     loss_data = df.select(["step", "loss"]).to_pandas()
-    loss_data["moving_avg"] = loss_data["loss"].rolling(100).mean()
-    sns.lineplot(x="step", y="moving_avg", data=loss_data, color="red")
+    loss_data["rolling_mean"] = loss_data["loss"].rolling(1000).mean()
+    # percentiles
+    loss_data["rolling_max"] = loss_data["loss"].rolling(1000).quantile(0.99)
+    loss_data["rolling_min"] = loss_data["loss"].rolling(1000).quantile(0.01)
+    sns.lineplot(x="step", y="rolling_mean", data=loss_data, color="red", alpha=0.9)
+    sns.lineplot(x="step", y="rolling_max", data=loss_data, color="black", alpha=0.25)
+    sns.lineplot(x="step", y="rolling_min", data=loss_data, color="black", alpha=0.25)
 
     # check if we have at least x_min steps
     if loss_data["step"].iloc[-1] > x_min:
@@ -115,13 +120,22 @@ def plot_loss_by_step(df: pl.DataFrame, x_min: int = 1000) -> Path:
     plt.xscale("log")
 
     # add a horizontal line and label for the final moving average value
-    final_avg = loss_data["moving_avg"].iloc[-1]
+    final_avg = loss_data["rolling_mean"].iloc[-1]
     plt.axhline(final_avg, color="black", linestyle="--")
     plt.text(
         int(loss_data["step"].iloc[-1] * 1.01),
         final_avg + 0.1,
         f"{final_avg:.2f}",
         color="black",
+    )
+
+    # add min loss value line
+    min_loss = loss_data["loss"].min()
+    plt.axhline(min_loss, color="green", linestyle="--")
+    plt.text(
+        int(loss_data["step"].iloc[-1] * 1.01),
+        min_loss,
+        f"{min_loss:.2f}",
     )
 
     # save the plot
@@ -182,10 +196,28 @@ def plot_learning_rate_loss(df: pl.DataFrame) -> Path:
     """
     # set up the plotting style
     sns.set_style("whitegrid")
-    plt.figure(figsize=(12, 8))
+
+    # two panels
+    plt.figure(figsize=(12, 12))
+    plt.subplot(2, 1, 1)
+
+    # first, plot the time series of learning rate by step
+    sns.lineplot(x="step", y="lr", data=df.to_pandas())
+    plt.title("Learning Rate by Step")
+    plt.xlabel("Step")
+    plt.ylabel("Learning Rate")
+
+    # second, plot the scatter plot of learning rate vs loss with step as color
+    plt.subplot(2, 1, 2)
 
     # scatter plot of learning rate vs loss with step as color
-    sns.scatterplot(x="step", y="lr", hue="loss", data=df.to_pandas())
+    sns.scatterplot(
+        x="lr",
+        y="loss_diff",
+        hue="step",
+        alpha=0.5,
+        data=df.with_columns(loss_diff=pl.col("loss").diff()).to_pandas(),
+    )
     plt.title("Learning Rate and Loss")
     plt.xlabel("Learning Rate")
     plt.ylabel("Loss")
