@@ -25,7 +25,7 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
     def __init__(
         self,
         optimizer: torch.optim.Optimizer,
-        peak_lr=1e-4,
+        peak_lr: float = 1e-4,
         start_lr: Optional[float] = None,
         end_lr: Optional[float] = None,
         warmup_steps: int = 1000,
@@ -56,8 +56,28 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         self.total_steps = total_steps
         self.lr = start_lr
 
+        # calculate the rate of change for each phase
+        self.last_lr = self.start_lr
+        self.warmup_rate = (peak_lr - self.start_lr) / warmup_steps
+        self.cooldown_rate = (self.end_lr - peak_lr) / (total_steps - warmup_steps)
+
         # call the parent
         super().__init__(optimizer, self.get_lr, last_epoch=last_epoch)
+
+    def get_current_phase(self) -> str:
+        """
+        Get the current phase.
+
+        Returns:
+            str: The phase.
+        """
+        if self.current_step < self.warmup_steps:
+            return "warmup"
+
+        if self.warmup_steps <= self.current_step < self.warmup_steps + self.peak_steps:
+            return "peak"
+
+        return "cooldown"
 
     # pylint: disable=unused-argument
     def get_lr(self, epoch: Optional[int] = None) -> Union[float, list[float]]:
@@ -73,23 +93,26 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         # set the current step
         self.current_step += 1
 
-        if self.current_step < self.warmup_steps:
-            #  linearly warm up from [0, warmup_steps] from [start_lr, peak_lr]
-            lr = (
-                self.start_lr
-                + (self.peak_lr - self.start_lr) * self.current_step / self.warmup_steps
-            )
-        elif self.warmup_steps <= self.current_step < self.peak_steps:
-            # peak_lr from [warmup_steps, warmup_steps + peak_steps]
-            lr = self.peak_lr
-        elif self.peak_steps <= self.current_step < self.total_steps:
-            # linearly cool down from [warmup_steps + peak_steps, total_steps]
-            lr = self.peak_lr - (self.peak_lr - self.end_lr) * (
-                self.current_step - self.peak_steps
-            ) / (self.total_steps - self.peak_steps)
-        else:
-            # end_lr if we are still going
-            lr = self.end_lr
+        # get the phase
+        phase = self.get_current_phase()
 
-        # inc and return
-        return [lr for _ in self.optimizer.param_groups]
+        # set the learning rate
+        if phase == "warmup":
+            self.lr = self.last_lr + self.warmup_rate
+        elif phase == "peak":
+            self.lr = self.peak_lr
+        else:
+            self.lr = self.last_lr + self.cooldown_rate
+        self.last_lr = self.lr
+
+        # return the learning rate
+        return [self.lr] * len(self.optimizer.param_groups)
+
+    def __str__(self) -> str:
+        """
+        Get the string representation.
+
+        Returns:
+            str: The string representation.
+        """
+        return f"ExponentialWarmupCooldownScheduler(lr={self.lr}, step={self.current_step})"
