@@ -1,15 +1,21 @@
 {
   "precision": "bfloat16",
-  "batch_size": 64,
-  "endpoint_url": "https://dev.api.data.kl3m.ai/",
+  "batch_size": 32,
+  "endpoint_url": "http://localhost:8000/",
   "matroyshka_probability": 0.5,
   "steps_per_epoch": 1000000,
   "steps_per_save": 1000,
   "optimizer": {
-    "peak_lr": 0.0005,
-    "warmup_steps": 10000,
-    "peak_steps": 990000,
-    "total_steps": 2000000,
+    "scheduler_type": "exponential",
+    "start_lr": 0.0000001,
+    "end": 0.0000001,
+    "warmup_factor": 2.0,
+    "warmup_steps_per_period": 100,
+    "warmup_periods": 10,
+    "constant_steps": 100,
+    "cooldown_factor": 1.5,
+    "cooldown_steps_per_period": 100,
+    "cooldown_periods": 10,
     "max_grad_norm": 8.0
   },
   "deepspeed": {
