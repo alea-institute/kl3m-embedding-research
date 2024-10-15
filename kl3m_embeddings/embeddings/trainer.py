@@ -8,8 +8,10 @@ pure torch, accelerate, deepspeed, etc.
 
 # imports
 import abc
+import atexit
 import concurrent.futures
 import datetime
+import gzip
 import json
 import logging
 import os
@@ -24,6 +26,10 @@ import torch.nn
 import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 from transformers.modeling_outputs import MaskedLMOutput
+
+from kl3m_embeddings.schedulers.exponential_warmup_cooldown import (
+    ExponentialWarmupCooldownScheduler,
+)
 
 # project
 from kl3m_embeddings.schedulers.linear_warmup_cooldown import (
@@ -117,7 +123,10 @@ class KL3MTorchTrainer(abc.ABC):
         # open the log path and setup log step structure
         self.log_path = self.checkpoint_path / "log.jsonl"
         self.log_path.touch()
-        self.log_file = self.log_path.open("at+")
+        self.log_file = self.log_path.open("at+", encoding="utf-8")
+        self.object_log_path = self.checkpoint_path / "objects.jsonl.gz"
+        self.object_log_path.touch()
+        self.object_log_file = gzip.open(self.object_log_path, "at+", encoding="utf-8")
 
         # setup log entry structures
         self.step_entry: dict[str, Any] = {}
@@ -134,6 +143,9 @@ class KL3MTorchTrainer(abc.ABC):
             max_workers=num_workers,
             thread_name_prefix="kl3m_trainer",
         )
+
+        # register the shutdown handler
+        atexit.register(self.shutdown)
 
     # match log args format with level
     def log(self, message: str, *args, level: str = "info") -> None:
@@ -154,9 +166,12 @@ class KL3MTorchTrainer(abc.ABC):
             *args,
         )
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def shutdown(self) -> None:
         """
-        Exit the trainer.
+        Clean up the files and pools at shutdown.
+
+        Returns:
+            None
         """
         # close the log file
         try:
@@ -164,10 +179,22 @@ class KL3MTorchTrainer(abc.ABC):
         except Exception as e:  # pylint: disable=broad-except
             self.logger.error("Error closing log file: %s", str(e))
 
+        # close the object log file
         try:
-            self.sample_thread_pool.shutdown()
+            self.object_log_file.close()
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.error("Error closing object log file: %s", str(e))
+
+        try:
+            self.sample_thread_pool.shutdown(wait=True, cancel_futures=True)
         except Exception as e:  # pylint: disable=broad-except
             self.logger.error("Error closing thread pool: %s", str(e))
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Exit the trainer.
+        """
+        self.shutdown()
 
     @staticmethod
     def load_training_config(config_path: Path) -> dict:
@@ -242,17 +269,42 @@ class KL3MTorchTrainer(abc.ABC):
             torch.optim.lr_scheduler._LRScheduler: The scheduler.
         """
         optimizer_config = self.training_config.get("optimizer", {})
-        self.scheduler = LinearWarmupCooldownScheduler(
-            self.optimizer,
-            peak_lr=optimizer_config.get("peak_lr", DEFAULT_LR),
-            start_lr=optimizer_config.get("start_lr", None),
-            end_lr=optimizer_config.get("end_lr", None),
-            warmup_steps=optimizer_config.get("warmup_steps", DEFAULT_WARMUP_STEPS),
-            peak_steps=optimizer_config.get(
-                "peak_steps", DEFAULT_TOTAL_STEPS // 2
-            ),  # default to half of total steps
-            total_steps=optimizer_config.get("total_steps", DEFAULT_TOTAL_STEPS),
+        scheduler_type = optimizer_config.get(
+            "scheduler_type", "linear_warmup_cooldown"
         )
+
+        if scheduler_type in ("linear", "linear_warmup_cooldown"):
+            self.scheduler = LinearWarmupCooldownScheduler(
+                self.optimizer,
+                peak_lr=optimizer_config.get("peak_lr", DEFAULT_LR),
+                start_lr=optimizer_config.get("start_lr", None),
+                end_lr=optimizer_config.get("end_lr", None),
+                warmup_steps=optimizer_config.get("warmup_steps", DEFAULT_WARMUP_STEPS),
+                peak_steps=optimizer_config.get(
+                    "peak_steps", DEFAULT_TOTAL_STEPS // 2
+                ),  # default to half of total steps
+                total_steps=optimizer_config.get("total_steps", DEFAULT_TOTAL_STEPS),
+            )
+        elif scheduler_type in ("exponential", "exponential_warmup_cooldown"):
+            self.scheduler = ExponentialWarmupCooldownScheduler(
+                self.optimizer,
+                start_lr=optimizer_config.get("start_lr", DEFAULT_LR),
+                warmup_factor=optimizer_config.get("warmup_factor", 2.0),
+                warmup_steps_per_period=optimizer_config.get(
+                    "warmup_steps_per_period", 100
+                ),
+                warmup_periods=optimizer_config.get("warmup_periods", 8),
+                constant_steps=optimizer_config.get("constant_steps", 100),
+                cooldown_factor=optimizer_config.get("cooldown_factor", 2.0),
+                cooldown_steps_per_period=optimizer_config.get(
+                    "cooldown_steps_per_period", 100
+                ),
+                cooldown_periods=optimizer_config.get("cooldown_periods", 8),
+                last_epoch=-1,
+            )
+        else:
+            raise ValueError(f"Unknown scheduler type: {scheduler_type}")
+
         self.log("Initialized scheduler: %s", self.scheduler)
 
     def get_lr(self) -> float:
@@ -271,6 +323,22 @@ class KL3MTorchTrainer(abc.ABC):
         # add time if not there
         if "time" not in self.step_entry:
             self.step_entry["time"] = datetime.datetime.now().isoformat()
+
+        # offload the 'objects' entry if provided into a sidecar; otherwise, this blows up the time to calculate
+        # or load the model
+        entry_objects = self.step_entry.pop("objects", None)
+        if entry_objects:
+            self.object_log_file.write(
+                json.dumps(  # type: ignore
+                    {
+                        "step": self.step_entry.get("step", 0),
+                        "objects": entry_objects,
+                    },
+                    default=str,
+                )
+                + "\n"
+            )
+            self.object_log_file.flush()
 
         # add to list
         self.step_logs.append(self.step_entry)
@@ -461,11 +529,13 @@ class KL3MTorchTrainer(abc.ABC):
         if checkpoint_path.exists() and log_file_path.exists():
             self.log("Loading log file %s", log_file_path)
             try:
-                log_contents = log_file_path.read_text()
-                for line in log_contents.strip().splitlines():
-                    entry = json.loads(line)
-                    self.step_logs.append(entry)
-                    self.loss_ts.append(entry["loss"])
+                with log_file_path.open("rt", encoding="utf-8") as log_file:
+                    for line in log_file:
+                        # load and pop out the objects to avoid OOM on low ram, long step runs
+                        entry = json.loads(line)
+                        entry.pop("objects", None)
+                        self.step_logs.append(entry)
+                        self.loss_ts.append(entry["loss"])
 
                 # get the step and epoch from the final entry
                 step = self.step_logs[-1]["step"] + 1
@@ -601,5 +671,11 @@ class KL3MTorchTrainer(abc.ABC):
             finally:
                 # final save
                 self.save()
+
+                # force thread pool shutdown after saving
+                try:
+                    self.sample_thread_pool.shutdown(wait=False)
+                except Exception as e:  # pylint: disable=broad-except
+                    print(f"Error shutting down sample thread pool: {e}")
 
         return train_status

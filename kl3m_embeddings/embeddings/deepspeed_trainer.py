@@ -363,4 +363,10 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
             # final save
             self.save()
 
+            # force thread pool shutdown after saving
+            try:
+                self.sample_thread_pool.shutdown(wait=False)
+            except Exception as e:  # pylint: disable=broad-except
+                print(f"Error shutting down sample thread pool: {e}")
+
         return train_status
