@@ -538,9 +538,16 @@ class KL3MTorchTrainer(abc.ABC):
                         self.loss_ts.append(entry["loss"])
 
                 # get the step and epoch from the final entry
-                step = self.step_logs[-1]["step"] + 1
-                epoch = self.step_logs[-1]["epoch"]
-                self.log("Reloaded state from log file: step=%d, epoch=%d", step, epoch)
+                if len(self.step_logs) > 0:
+                    step = self.step_logs[-1]["step"] + 1
+                    epoch = self.step_logs[-1]["epoch"]
+                    self.log(
+                        "Reloaded state from log file: step=%d, epoch=%d", step, epoch
+                    )
+                else:
+                    self.log(
+                        "No entries in log file, starting from scratch @ step=0, epoch=0"
+                    )
             except Exception as e:  # pylint: disable=broad-except
                 print(f"Error loading log file: {str(e)}")
 

@@ -231,21 +231,63 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         """
         Save the model.
 
-        TODO: decide if we want to support stage3 saving or keep that in isolated
         pipeline.
         """
-        # save the model
-        model_state_dict = deepspeed.checkpoint.utils.clone_tensors_for_torch_save(
-            self.deepspeed_engine.module.state_dict()
+        # check if we're running stage3
+        zero_stage = (
+            self.training_config.get("deepspeed", {})
+            .get("zero_optimization", {})
+            .get("stage", 0)
         )
 
-        self.log("Saving model to %s", self.checkpoint_path)
-        self.deepspeed_engine.module.save_pretrained(
-            save_directory=self.checkpoint_path,
-            state_dict=model_state_dict,
-        )  # type: ignore
+        # save the model
+        if zero_stage < 3:
+            model_state_dict = deepspeed.checkpoint.utils.clone_tensors_for_torch_save(
+                self.deepspeed_engine.module.state_dict()
+            )
+
+            self.log("Saving model to %s", self.checkpoint_path)
+            self.deepspeed_engine.module.save_pretrained(
+                save_directory=self.checkpoint_path,
+                state_dict=model_state_dict,
+            )  # type: ignore
+        else:
+            # saving with 16bit model
+            self.log("Saving model to %s", self.checkpoint_path)
+            self.deepspeed_engine.module.save_pretrained(
+                save_directory=self.checkpoint_path,
+                safe_serialization=False,
+                max_shard_size="4GB",
+            )
+            self.deepspeed_engine.save_16bit_model(
+                save_dir=self.checkpoint_path,
+                save_filename="pytorch_model.bin",
+            )
         self.log("Saving tokenizer to %s", self.checkpoint_path)
         self.tokenizer.save_pretrained(self.checkpoint_path)  # type: ignore
+
+    def convert_to_safetensors(self) -> None:
+        """
+        Load a pytorch_model.bin model and convert to new safetensors format after
+        collecting state_dict from stage3 training run.
+
+        Returns:
+            None
+        """
+        # load the model
+        torch_model = self.model.from_pretrained(
+            self.checkpoint_path, use_safetensors=False
+        )
+
+        # convert to safetensors
+        torch_model.save_pretrained(
+            save_directory=self.checkpoint_path, use_safetensors=True
+        )
+
+        # unlink the old model
+        model_path = self.checkpoint_path / "pytorch_model.bin"
+        if model_path.exists():
+            model_path.unlink()
 
     # pylint: disable=too-many-statements
     def train(self, steps: Optional[int] = None) -> bool:
@@ -362,6 +404,7 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         finally:
             # final save
             self.save()
+            self.convert_to_safetensors()
 
             # force thread pool shutdown after saving
             try:
