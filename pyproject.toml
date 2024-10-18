@@ -43,6 +43,9 @@ tokenizers = "^0.20.0"
 orjsonl = {version = "^1.0.0", optional = true}
 deepspeed = "^0.15.2"
 mpi4py = "^4.0.1"
+matplotlib = "^3.9.2"
+seaborn = "^0.13.2"
+polars = "^1.9.0"
 
 
 [tool.poetry.group.dev.dependencies]
