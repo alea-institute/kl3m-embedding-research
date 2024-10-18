@@ -31,10 +31,11 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
     KL3M Deepspeed Trainer
     """
 
+    INITIALIZE_ON_DEVICE = False
+
     def __init__(
         self,
         config_path: Path,
-        tokenizer_name: str,
         checkpoint_path: Optional[Path] = None,
         device: str = "cuda",
         num_workers: int = 2,
@@ -45,14 +46,11 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         Args:
             config_path (Path): The path to the model configuration.
             checkpoint_path (Path): The path to save model checkpoints.
-            tokenizer_name (str): The name of the tokenizer.
             device (str): The device to use.
             num_workers (int): The number of workers to use in background tasks.
         """
         # call super
-        super().__init__(
-            config_path, tokenizer_name, checkpoint_path, device, num_workers
-        )
+        super().__init__(config_path, checkpoint_path, device, num_workers)
 
         # then override the deepspeed logger
         deepspeed.logger = self.logger
@@ -87,6 +85,11 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
                     "enabled": True,
                 }
 
+        # set up the optimizer
+        self.zero_stage = self.deepspeed_config.get("zero_optimization", {}).get(
+            "stage", 0
+        )
+
         # set up init args
         ds_args = {
             "config": self.deepspeed_config,
@@ -99,6 +102,7 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         # now initialize the deepspeed engine; skip training data loader
         self.deepspeed_engine, self.deepspeed_optimizer, _, self.deepspeed_scheduler = (
             deepspeed.initialize(
+                args={"local_rank": self.local_rank},
                 **ds_args,
             )
         )
@@ -119,13 +123,12 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
 
         # check if we have set "optimizer_type"
         optimizer_type = deepspeed_config.get("optimizer_type", None)
-        zero_stage = deepspeed_config.get("zero_optimization", {}).get("stage", 0)
 
         # check bad cases to fail on
         # check old notes and new gh issues
 
         # set the optimizer
-        if optimizer_type in ("fused_adamw", "adamw") and zero_stage < 2:
+        if optimizer_type in ("fused_adamw", "adamw") and self.zero_stage < 2:
             self.optimizer = deepspeed.ops.adam.FusedAdam(
                 self.model.parameters(),  # type: ignore
                 lr=self.training_config.get("optimizer", {}).get("peak_lr", DEFAULT_LR),
@@ -205,7 +208,6 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         Override the torch step with the DS engine.
 
         Args:
-            None
 
         Returns:
             None
@@ -233,15 +235,8 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
 
         pipeline.
         """
-        # check if we're running stage3
-        zero_stage = (
-            self.training_config.get("deepspeed", {})
-            .get("zero_optimization", {})
-            .get("stage", 0)
-        )
-
         # save the model
-        if zero_stage < 3:
+        if self.zero_stage < 3:
             model_state_dict = deepspeed.checkpoint.utils.clone_tensors_for_torch_save(
                 self.deepspeed_engine.module.state_dict()
             )
@@ -275,7 +270,7 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
             None
         """
         # load the model
-        torch_model = self.model.from_pretrained(
+        torch_model = self.model.from_pretrained(  # type: ignore
             self.checkpoint_path, use_safetensors=False
         )
 
@@ -404,7 +399,10 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         finally:
             # final save
             self.save()
-            self.convert_to_safetensors()
+
+            # check deepspeed stage
+            if self.zero_stage == 3:
+                self.convert_to_safetensors()
 
             # force thread pool shutdown after saving
             try:

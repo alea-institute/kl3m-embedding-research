@@ -64,10 +64,11 @@ class KL3MTorchTrainer(abc.ABC):
     No deepspeed, accelerate, or transformers.Trainer here.
     """
 
+    INITIALIZE_ON_DEVICE = True
+
     def __init__(
         self,
         config_path: Path,
-        tokenizer_name: str,
         checkpoint_path: Optional[Path] = None,
         device: str = "cuda",
         num_workers: int = 2,
@@ -78,7 +79,6 @@ class KL3MTorchTrainer(abc.ABC):
         Args:
             config_path (Path): The path to the model configuration.
             checkpoint_path (Path): The path to save model checkpoints.
-            tokenizer_name (str): The name of the tokenizer.
             device (str): The device to use.
             num_workers (int): The number of workers to use in background tasks.
         """
@@ -97,6 +97,9 @@ class KL3MTorchTrainer(abc.ABC):
 
         # load the training config
         self.training_config = self.load_training_config(config_path)
+        self.tokenizer_name = self.training_config.get(
+            "tokenizer", "alea-institute/kl3m-003-64k"
+        )
 
         # set precision
         self.precision = {
@@ -106,7 +109,7 @@ class KL3MTorchTrainer(abc.ABC):
         }.get(self.training_config.get("precision", "bfloat16"), torch.bfloat16)
 
         # get the tokenizer and model
-        self.tokenizer = self.get_tokenizer(tokenizer_name)
+        self.tokenizer = self.get_tokenizer(self.tokenizer_name)
         self.model: Optional[torch.nn.Module] = None
         self.setup_model(
             tokenizer=self.tokenizer,
@@ -454,7 +457,19 @@ class KL3MTorchTrainer(abc.ABC):
         """
         # save the model
         self.log("Saving model to %s", self.checkpoint_path)
-        self.model.save_pretrained(self.checkpoint_path)  # type: ignore
+
+        try:
+            self.model.save_pretrained(self.checkpoint_path)  # type: ignore
+        except Exception as e:  # pylint: disable=broad-except
+            # check for `safe_serialization=False` in the str
+            if "safe_serialization=False" in str(e):
+                self.log(
+                    "Falling back to torch.bin format due to safe_serialization=False"
+                )
+                self.model.save_pretrained(  #  type: ignore
+                    self.checkpoint_path, safe_serialization=False
+                )  # type: ignore
+
         self.log("Saving tokenizer to %s", self.checkpoint_path)
         self.tokenizer.save_pretrained(self.checkpoint_path)  # type: ignore
 
@@ -577,6 +592,9 @@ class KL3MTorchTrainer(abc.ABC):
         )
         optimizer_config = self.training_config.get("optimizer", {})
         max_grad_norm = optimizer_config.get("max_grad_norm", DEFAULT_MAX_GRAD_NORM)
+        gradient_accumulation_steps = optimizer_config.get(
+            "gradient_accumulation_steps", 1
+        )
         total_steps = optimizer_config.get("total_steps", DEFAULT_TOTAL_STEPS)
 
         # get state
@@ -633,10 +651,11 @@ class KL3MTorchTrainer(abc.ABC):
                         )
 
                     # step optimizer
-                    self.step()
+                    if (step + 1) % gradient_accumulation_steps == 0:
+                        self.step()
 
                     # log training metrics
-                    if step % steps_per_save == 0:
+                    if step % steps_per_save == 0 and step > 0:
                         self.save()
 
                     # get final time

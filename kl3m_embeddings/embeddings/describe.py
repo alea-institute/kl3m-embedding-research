@@ -46,6 +46,12 @@ def calculate_statistics(df: pl.DataFrame) -> pl.DataFrame:
     """
     return df.select(
         [
+            # total steps is last value
+            pl.col("step").last().alias("total_steps"),
+            # last loss
+            pl.col("loss").last().alias("final_loss"),
+            # trailing 100 step loss mean
+            pl.col("loss").tail(100).mean().alias("last_100_loss_mean"),
             # loss stats
             pl.col("loss").mean().alias("mean_loss"),
             pl.col("loss").std().alias("std_loss"),
@@ -80,12 +86,13 @@ def calculate_statistics(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def plot_loss_by_step(df: pl.DataFrame, x_min: int = 1000) -> Path:
+def plot_loss_by_step(df: pl.DataFrame, output_path: Path, x_min: int = 1000) -> Path:
     """
     Plot the loss by step.
 
     Args:
         df (pl.DataFrame): The training log data.
+        output_path (Path): The output path for the plot.
         x_min (int): The minimum x-axis value to plot.
 
     Returns:
@@ -96,20 +103,31 @@ def plot_loss_by_step(df: pl.DataFrame, x_min: int = 1000) -> Path:
     plt.figure(figsize=(12, 8))
 
     # plot loss by step with 50% transparency
-    sns.lineplot(x="step", y="loss", data=df.to_pandas(), alpha=0.25)
+    # sns.lineplot(x="step", y="loss", data=df.to_pandas(), alpha=0.25)
+    plt.plot(df["step"], df["loss"], alpha=0.25)
     plt.title("Loss by Step")
     plt.xlabel("Step")
     plt.ylabel("Loss")
 
     # now get the 100-step moving average loss and plot it
     loss_data = df.select(["step", "loss"]).to_pandas()
-    loss_data["rolling_mean"] = loss_data["loss"].rolling(1000).mean()
-    # percentiles
-    loss_data["rolling_max"] = loss_data["loss"].rolling(1000).quantile(0.99)
-    loss_data["rolling_min"] = loss_data["loss"].rolling(1000).quantile(0.01)
-    sns.lineplot(x="step", y="rolling_mean", data=loss_data, color="red", alpha=0.9)
-    sns.lineplot(x="step", y="rolling_max", data=loss_data, color="black", alpha=0.25)
-    sns.lineplot(x="step", y="rolling_min", data=loss_data, color="black", alpha=0.25)
+    loss_data["rolling_mean"] = loss_data["loss"].rolling(100).mean()
+    loss_data["rolling_max"] = (
+        loss_data["loss"].rolling(100).quantile(0.99).rolling(100).mean()
+    )
+    loss_data["rolling_min"] = (
+        loss_data["loss"].rolling(100).quantile(0.01).rolling(100).mean()
+    )
+
+    # plot the top and bottom lines as 50% black and fill between
+    plt.plot(loss_data["step"], loss_data["rolling_mean"], color="red", alpha=0.75)
+    plt.fill_between(
+        loss_data["step"],
+        loss_data["rolling_min"],
+        loss_data["rolling_max"],
+        color="black",
+        alpha=0.1,
+    )
 
     # check if we have at least x_min steps
     if loss_data["step"].iloc[-1] > x_min:
@@ -139,19 +157,22 @@ def plot_loss_by_step(df: pl.DataFrame, x_min: int = 1000) -> Path:
     )
 
     # save the plot
-    plot_path = Path("loss_by_step.png")
+    plot_path = output_path / "loss_by_step.png"
     plt.savefig(plot_path)
     plt.close()
 
     return plot_path
 
 
-def plot_step_time_components(df: pl.DataFrame, y_max_qt: float = 0.99) -> Path:
+def plot_step_time_components(
+    df: pl.DataFrame, output_path: Path, y_max_qt: float = 0.99
+) -> Path:
     """
     Plot the step time components.
 
     Args:
         df (pl.DataFrame): The training log data.
+        output_path (Path): The output path for the plot.
         y_max_qt (float): The quantile to use for the y-axis max value.
 
     Returns:
@@ -174,22 +195,23 @@ def plot_step_time_components(df: pl.DataFrame, y_max_qt: float = 0.99) -> Path:
 
     # set the y max to the quantile value of the sums plus 10% headspace
     qt_value = step_time_data.sum(axis=1).quantile(y_max_qt)
-    plt.ylim(0, qt_value * 1.1)
+    plt.ylim(0, qt_value * 1.25)
 
     # save the plot
-    plot_path = Path("step_time_components.png")
+    plot_path = output_path / "step_time_components.png"
     plt.savefig(plot_path)
     plt.close()
 
     return plot_path
 
 
-def plot_learning_rate_loss(df: pl.DataFrame) -> Path:
+def plot_learning_rate_loss(df: pl.DataFrame, output_path: Path) -> Path:
     """
     Plot the learning rate and loss.
 
     Args:
         df (pl.DataFrame): The training log data.
+        output_path (Path): The output path for the plot.
 
     Returns:
         Path: The path to the plot.
@@ -202,7 +224,8 @@ def plot_learning_rate_loss(df: pl.DataFrame) -> Path:
     plt.subplot(2, 1, 1)
 
     # first, plot the time series of learning rate by step
-    sns.lineplot(x="step", y="lr", data=df.to_pandas())
+    # sns.lineplot(x="step", y="lr", data=df.to_pandas())
+    plt.plot(df["step"], df["lr"])
     plt.title("Learning Rate by Step")
     plt.xlabel("Step")
     plt.ylabel("Learning Rate")
@@ -211,19 +234,23 @@ def plot_learning_rate_loss(df: pl.DataFrame) -> Path:
     plt.subplot(2, 1, 2)
 
     # scatter plot of learning rate vs loss with step as color
-    sns.scatterplot(
-        x="lr",
-        y="loss_diff",
-        hue="step",
-        alpha=0.5,
-        data=df.with_columns(loss_diff=pl.col("loss").diff()).to_pandas(),
+    df = df.with_columns(loss_diff=pl.col("loss").diff())
+    plt.scatter(df["lr"], df["loss_diff"], c=df["step"], alpha=0.1)
+
+    # overplot the mean loss diff by lr as well
+    mean_loss_diff_by_lr = df.group_by("lr").agg(
+        pl.col("loss_diff").mean().alias("mean_loss_diff")
     )
+    plt.plot(
+        mean_loss_diff_by_lr["lr"], mean_loss_diff_by_lr["mean_loss_diff"], color="red"
+    )
+
     plt.title("Learning Rate and Loss")
     plt.xlabel("Learning Rate")
     plt.ylabel("Loss")
 
     # save the plot
-    plot_path = Path("learning_rate_loss.png")
+    plot_path = output_path / "learning_rate_loss.png"
     plt.savefig(plot_path)
     plt.close()
 
@@ -238,6 +265,7 @@ if __name__ == "__main__":
     args = arg_parser.parse_args()
 
     # load the log data
+    artifact_output_path = args.log_path.parent
     log_data = load_log_data(args.log_path)
 
     # calculate statistics
@@ -250,13 +278,15 @@ if __name__ == "__main__":
     print(statistics)
 
     # plot loss by step
-    loss_by_step_plot = plot_loss_by_step(log_data)
+    loss_by_step_plot = plot_loss_by_step(log_data, artifact_output_path)
     print(f"Loss by Step Plot: {loss_by_step_plot}")
 
     # plot step time components
-    step_time_components_plot = plot_step_time_components(log_data)
+    step_time_components_plot = plot_step_time_components(
+        log_data, artifact_output_path
+    )
     print(f"Step Time Components Plot: {step_time_components_plot}")
 
     # plot learning rate and loss
-    lr_loss_plot = plot_learning_rate_loss(log_data)
+    lr_loss_plot = plot_learning_rate_loss(log_data, artifact_output_path)
     print(f"Learning Rate and Loss Plot: {lr_loss_plot}")

@@ -1,9 +1,9 @@
 """
-Train a kl3m deberta model with given configuration using deepspeed, which supports
+Train a kl3m roberta model with given configuration using deepspeed, which supports
 both distributed training and various optimization and parallelization strategies.
 
 Note that these models are trained with Matroyshka-style dimensionality reduction, but
-they can be used with the standard DebertaV2 huggingface architecture on the normal
+they can be used with the standard Roberta huggingface architecture on the normal
 .forward() after training without any issues.
 """
 
@@ -18,13 +18,14 @@ from typing import Optional
 # packages
 import httpx
 import torch
-from transformers import DebertaV2Config, PreTrainedTokenizerFast
+from transformers import PreTrainedTokenizerFast, RobertaConfig
+
+from kl3m_embeddings.embeddings.deepspeed_trainer import KL3MDeepspeedTrainer
 
 # project
-from kl3m_embeddings.embeddings.deberta.matroyshka_deberta import (
-    MatroyshkaDebertaV2ForMaskedLM,
+from kl3m_embeddings.embeddings.roberta.matroyshka_roberta import (
+    MatroyshkaRobertaForMaskedLM,
 )
-from kl3m_embeddings.embeddings.deepspeed_trainer import KL3MDeepspeedTrainer
 from kl3m_embeddings.utils.models import get_model_size_str
 
 # constants
@@ -32,9 +33,9 @@ DEFAULT_TOKENIZER = "alea-institute/kl3m-003-64k"
 DEFAULT_ENDPOINT = "http://localhost:8000"
 
 
-class KL3MDeepspeedDebertaTrainer(KL3MDeepspeedTrainer):
+class KL3MDeepspeedRobertaTrainer(KL3MDeepspeedTrainer):
     """
-    Trainer for kl3m deberta model.
+    Trainer for kl3m roberta model.
     """
 
     def __init__(
@@ -97,7 +98,7 @@ class KL3MDeepspeedDebertaTrainer(KL3MDeepspeedTrainer):
         # try to load from the checkpoint path
         if self.checkpoint_path.exists():
             try:
-                self.model = MatroyshkaDebertaV2ForMaskedLM.from_pretrained(
+                self.model = MatroyshkaRobertaForMaskedLM.from_pretrained(
                     self.checkpoint_path,
                     torch_dtype=precision,
                 )
@@ -110,14 +111,14 @@ class KL3MDeepspeedDebertaTrainer(KL3MDeepspeedTrainer):
 
         if self.model is None:
             # load from config path
-            model_config = DebertaV2Config.from_pretrained(
+            model_config = RobertaConfig.from_pretrained(
                 self.config_path,
                 torch_dtype=precision,
             )
 
             # set the vocab size and max position embeddings
             model_config.vocab_size = len(self.tokenizer)
-            self.model = MatroyshkaDebertaV2ForMaskedLM(model_config)
+            self.model = MatroyshkaRobertaForMaskedLM(model_config)
             self.model.train()
 
             self.log("Created model from config.")
@@ -214,7 +215,7 @@ class KL3MDeepspeedDebertaTrainer(KL3MDeepspeedTrainer):
 if __name__ == "__main__":
     # set up args
     parser = argparse.ArgumentParser(
-        description="Train a deberta model with given configuration."
+        description="Train a roberta model with given configuration."
     )
     parser.add_argument(
         "config_path", type=Path, help="Path to the model configuration"
@@ -228,7 +229,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint_path", type=Path, help="Path to the checkpoint file", default=None
     )
-
     # add deepspeed args now for rank
     parser.add_argument(
         "--local_rank",
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # create the trainer
-    trainer = KL3MDeepspeedDebertaTrainer(
+    trainer = KL3MDeepspeedRobertaTrainer(
         config_path=args.config_path,
         checkpoint_path=args.checkpoint_path,
     )

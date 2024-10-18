@@ -12,7 +12,7 @@ import argparse
 from collections import Counter
 from math import log2
 from pathlib import Path
-from random import randint, random
+from random import choices, randint, random
 from typing import Optional
 
 # packages
@@ -40,14 +40,17 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
     def __init__(
         self,
         config_path: Path,
-        tokenizer_name: str = DEFAULT_TOKENIZER,
         checkpoint_path: Path = Path("checkpoint/"),
     ):
         # call the super
         super().__init__(
             config_path=config_path,
-            tokenizer_name=tokenizer_name,
             checkpoint_path=checkpoint_path,
+        )
+
+        # get task probabilities
+        self.task_probabilities = self.training_config.get(
+            "tasks", {"mlm": 0.5, "nsp": 0.5}
         )
 
         # get the matroyshka sampling probability
@@ -120,7 +123,10 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
 
         # set the model to the device and precision
         self.model.train()
-        self.model.to(dtype=precision).to(self.device)
+        if self.INITIALIZE_ON_DEVICE:
+            self.model.to(dtype=precision).to(self.device)
+        else:
+            self.model.to(dtype=precision)
 
     def get_sample(self, device: Optional[str] = "cpu") -> dict[str, torch.Tensor]:
         """
@@ -129,9 +135,16 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
         Returns:
             dict[str, torch.Tensor]: The sample.
         """
+        # get a task based on probability dist
+        task = choices(
+            population=list(self.task_probabilities.keys()),
+            weights=list(self.task_probabilities.values()),
+            k=1,
+        ).pop()
+
         # get url and request an MLM batch
-        mlm_url = f"{self.endpoint_url.rstrip('/')}/batch/mlm"
-        mlm_post_body = {
+        batch_url = f"{self.endpoint_url.rstrip('/')}/batch/{task}"
+        batch_post_body = {
             "batch_size": self.training_config.get("batch_size", 1),
         }
 
@@ -140,7 +153,7 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
         while True:
             try:
                 response = self.endpoint_client.post(
-                    mlm_url, json=mlm_post_body, timeout=1.0
+                    batch_url, json=batch_post_body, timeout=1.0
                 )
                 if response.status_code == 200:
                     break
@@ -220,7 +233,6 @@ if __name__ == "__main__":
     # create the trainer
     trainer = KL3MDebertaTrainer(
         config_path=args.config_path,
-        tokenizer_name=args.tokenizer_name,
         checkpoint_path=args.checkpoint_path,
     )
 
