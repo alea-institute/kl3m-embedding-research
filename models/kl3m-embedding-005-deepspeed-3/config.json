@@ -1,5 +1,5 @@
 {
-  "_name_or_path": "models/kl3m-embedding-005",
+  "_name_or_path": "models/kl3m-embedding-005-deepspeed-3",
   "architectures": [
     "MatroyshkaDebertaV2ForMaskedLM"
   ],

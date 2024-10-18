@@ -1,10 +1,15 @@
 {
+  "tokenizer": "alea-institute/kl3m-003-64k",
   "precision": "bfloat16",
   "batch_size": 64,
-  "endpoint_url": "https://dev.api.data.kl3m.ai/",
+  "endpoint_url": "http://localhost:8000/",
   "matroyshka_probability": 0.5,
   "steps_per_epoch": 1000000,
   "steps_per_save": 1000,
+  "tasks": {
+    "mlm": 0.5,
+    "nsp": 0.5
+  },
   "optimizer": {
     "scheduler_type": "exponential",
     "start_lr": 0.0000001,
