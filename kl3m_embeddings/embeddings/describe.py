@@ -5,6 +5,7 @@ Describe a training run by generating statistics and plots from a JSON log file.
 # imports
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 
 # packages
@@ -13,7 +14,7 @@ import polars as pl
 import seaborn as sns
 
 
-def load_log_data(log_path: Path) -> pl.DataFrame:
+def load_log_data(log_path: Path) -> tuple[pl.DataFrame, Counter]:
     """
     Load training log data from a JSON file.
 
@@ -24,14 +25,16 @@ def load_log_data(log_path: Path) -> pl.DataFrame:
         pl.DataFrame: The training log data.
     """
     # read the data
+    parsed_data = []
+    dataset_counts = Counter()
     with open(log_path, "rt", encoding="utf-8") as input_file:
-        data = input_file.read()
-
-    # parse the data
-    parsed_data = [json.loads(line) for line in data.strip().split("\n")]
+        for line in input_file:
+            record = json.loads(line)
+            dataset_counts.update(record.pop("datasets", {}))
+            parsed_data.append(record)
 
     # create a Polars DataFrame
-    return pl.DataFrame(parsed_data)
+    return pl.DataFrame(parsed_data), dataset_counts
 
 
 def calculate_statistics(df: pl.DataFrame) -> pl.DataFrame:
@@ -235,14 +238,15 @@ def plot_learning_rate_loss(df: pl.DataFrame, output_path: Path) -> Path:
 
     # scatter plot of learning rate vs loss with step as color
     df = df.with_columns(loss_diff=pl.col("loss").diff())
-    plt.scatter(df["lr"], df["loss_diff"], c=df["step"], alpha=0.1)
 
-    # overplot the mean loss diff by lr as well
-    mean_loss_diff_by_lr = df.group_by("lr").agg(
-        pl.col("loss_diff").mean().alias("mean_loss_diff")
-    )
-    plt.plot(
-        mean_loss_diff_by_lr["lr"], mean_loss_diff_by_lr["mean_loss_diff"], color="red"
+    # plot the relationship with mean loss diff
+    plt.scatter(
+        df["lr"],
+        df["loss"],
+        c=df["step"],
+        cmap="viridis",
+        alpha=0.5,
+        s=1,
     )
 
     plt.title("Learning Rate and Loss")
@@ -251,6 +255,39 @@ def plot_learning_rate_loss(df: pl.DataFrame, output_path: Path) -> Path:
 
     # save the plot
     plot_path = output_path / "learning_rate_loss.png"
+    plt.savefig(plot_path)
+    plt.close()
+
+    return plot_path
+
+
+# histogram of samples by dataset id (datasets key/values in the log)
+def plot_samples_by_dataset(df: pl.DataFrame, output_path: Path) -> Path:
+    """
+    Plot the number of samples by dataset.
+
+    Args:
+        df (pl.DataFrame): The training log data.
+        output_path (Path): The output path for the plot.
+
+    Returns:
+        Path to plot file
+    """
+    # set up the plotting style
+    sns.set_style("whitegrid")
+    plt.figure(figsize=(12, 8))
+
+    # count samples by dataset id
+    dataset_counts = df.group_by("dataset_id").agg(pl.count("sample_id").alias("count"))
+
+    # plot the histogram
+    sns.barplot(x="dataset_id", y="count", data=dataset_counts.to_pandas())
+    plt.title("Samples by Dataset")
+    plt.xlabel("Dataset ID")
+    plt.ylabel("Sample Count")
+
+    # save the plot
+    plot_path = output_path / "samples_by_dataset.png"
     plt.savefig(plot_path)
     plt.close()
 
@@ -266,7 +303,10 @@ if __name__ == "__main__":
 
     # load the log data
     artifact_output_path = args.log_path.parent
-    log_data = load_log_data(args.log_path)
+    log_data, dataset_counts = load_log_data(args.log_path)
+
+    print("Dataset Counts:")
+    print(dataset_counts)
 
     # calculate statistics
     statistics = calculate_statistics(log_data)
