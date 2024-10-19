@@ -330,6 +330,7 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
             while step < (steps or total_steps):
                 # log
                 self.log("Beginning step %d", step)
+                self.scheduler.current_step = step  # type: ignore
 
                 # populate more samples in the thread pool
                 for _ in range(self.sample_queue.maxsize):

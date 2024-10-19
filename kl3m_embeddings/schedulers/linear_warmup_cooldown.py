@@ -28,9 +28,9 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         peak_lr: float = 1e-4,
         start_lr: Optional[float] = None,
         end_lr: Optional[float] = None,
-        warmup_steps: int = 1000,
-        peak_steps: int = 990000,
-        total_steps: int = 2000000,
+        warmup_steps: int = 100,
+        peak_steps: int = 900,
+        total_steps: int = 200,
         last_epoch: int = -1,
     ):
         """
@@ -48,18 +48,16 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         """
         # initialize the scheduler
         self.peak_lr = peak_lr
-        self.current_step = 0
         self.start_lr = start_lr or peak_lr / 100
         self.end_lr = end_lr or peak_lr / 1000
         self.warmup_steps = warmup_steps
         self.peak_steps = peak_steps
         self.total_steps = total_steps
-        self.lr = start_lr
+        self.cooldown_steps = total_steps - warmup_steps - peak_steps
 
-        # calculate the rate of change for each phase
-        self.last_lr = self.start_lr
-        self.warmup_rate = (peak_lr - self.start_lr) / warmup_steps
-        self.cooldown_rate = (self.end_lr - peak_lr) / (total_steps - warmup_steps)
+        # get state values
+        self.current_step = 0
+        self.current_lr = start_lr
 
         # call the parent
         super().__init__(optimizer, self.get_lr, last_epoch=last_epoch)
@@ -90,23 +88,27 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         Returns:
             float: The learning rate.
         """
-        # set the current step
-        self.current_step += 1
-
         # get the phase
         phase = self.get_current_phase()
 
         # set the learning rate
         if phase == "warmup":
-            self.lr = self.last_lr + self.warmup_rate
+            warmup_pct = self.current_step / self.warmup_steps
+            self.current_lr = self.start_lr + warmup_pct * (
+                self.peak_lr - self.start_lr
+            )
         elif phase == "peak":
-            self.lr = self.peak_lr
+            self.current_lr = self.peak_lr
         else:
-            self.lr = self.last_lr + self.cooldown_rate
-        self.last_lr = self.lr
+            cooldown_pct = (
+                self.current_step - self.warmup_steps - self.peak_steps
+            ) / self.cooldown_steps
+            self.current_lr = max(
+                self.peak_lr - cooldown_pct * (self.peak_lr - self.end_lr), self.end_lr
+            )
 
         # return the learning rate
-        return [self.lr] * len(self.optimizer.param_groups)
+        return [self.current_lr] * len(self.optimizer.param_groups)
 
     def __str__(self) -> str:
         """
@@ -115,4 +117,21 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         Returns:
             str: The string representation.
         """
-        return f"ExponentialWarmupCooldownScheduler(lr={self.lr}, step={self.current_step})"
+        return f"LinearWarmupCooldownScheduler(lr={self.current_lr}, step={self.current_step})"
+
+
+if __name__ == "__main__":
+    # test the scheduler
+    optimizer = torch.optim.Adam([torch.zeros(1)], lr=1e-4)
+    scheduler = LinearWarmupCooldownScheduler(
+        optimizer,
+        start_lr=0.0001,
+        peak_lr=0.0003,
+        warmup_steps=10000,
+        peak_steps=90000,
+        total_steps=200000,
+    )
+    for step in range(0, 210000, 1000):
+        print(step, scheduler.get_lr())
+        if scheduler.current_step == 2000000:
+            break

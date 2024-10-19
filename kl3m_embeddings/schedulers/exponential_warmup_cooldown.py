@@ -99,9 +99,6 @@ class ExponentialWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         Returns:
             float: The learning rate.
         """
-        # set the current step
-        self.current_step += 1
-
         # check phase and step
         phase = self.get_current_phase()
         lr = self.lr
