@@ -28,7 +28,7 @@
   "position_buckets": 128,
   "relative_attention": true,
   "share_att_key": true,
-  "torch_dtype": "bfloat16",
+  "torch_dtype": "float32",
   "transformers_version": "4.45.2",
   "type_vocab_size": 0,
   "vocab_size": 65536
