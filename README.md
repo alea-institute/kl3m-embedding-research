@@ -31,9 +31,17 @@ Model training can be resumed as long as the `log.jsonl` file is present in the 
 
 ### DeBERTa-based Models
 
+
+#### torch only (single GPU)
 ```bash
 $ PYTHONPATH=. poetry run python3 kl3m_embeddings/embeddings/deberta/train_deberta_single.py models/kl3m-embedding-005/
 ```
+
+#### torch + deepspeed (multi-node, multi-GPU)
+```bash
+$ DS_SKIP_CUDA_CHECK=1 PYTHONPATH=. poetry run deepspeed kl3m_embeddings/embeddings/deberta/train_deberta_deepspeed.py models/kl3m-embedding-005-deepspeed-2/
+```
+
 
 ### Monitoring Progress
 
@@ -45,8 +53,19 @@ $ PYTHONPATH=. poetry run python3 kl3m_embeddings/embeddings/describe.py models/
 
 **Progress Example**
 ```
-Training:   0%|          | 1004/2000000 [00:52<80:15:01,  6.92it/s, loss=8.25, loss_100=8.275, loss_1000=9.945, lr=5.5e-05, step_time=0.08]
+Training:   1%|▌         | 1207/200000 [01:21<2:35:35, 21.29it/s, loss=5.54, loss_100=5.098, loss_1000=6.985, last_eval=7.50, lr=2.0e-04, step_time=0.05]
 ```
+
+**Sample Log Line** (`log.jsonl`)
+```json
+{"step": 424, "epoch": 1, "lr": 9.037e-05, "reduced_dim": 8, "task": "mlm", "num_samples": 64, "num_identifiers": 4, "num_tokens": 8192, "samples_by_dataset": {"reg_docs": 16, "govinfo": 16, "dockets": 16, "fdlp": 16}, "tokens_by_dataset": {"reg_docs": 2048, "govinfo": 2048, "dockets": 2048, "fdlp": 2048}, "sample_time": 0.02530217170715332, "loss": 7.4093098640441895, "forward_time": 0.014125823974609375, "backward_time": 0.004723310470581055, "optimizer_time": 0.0007536411285400391, "step_time": 0.046399831771850586, "time": "2024-10-20T12:24:45.957532"}
+```
+
+**Sample Eval Line** (`eval.jsonl`)
+```json
+{"step": 1000, "mean": 7.500783353328705, "median": 7.503348350524902, "std": 1.1186098803630797, "min": 1.8519301414489746, "p5": 5.78562373161316, "p95": 9.532702102661133, "max": 11.14339828491211, "num_samples": 1000}
+```
+
 
 ![loss_by_step.png](loss_by_step.png)
 
