@@ -18,7 +18,9 @@ from transformers.modeling_outputs import MaskedLMOutput
 # project
 from kl3m_embeddings.embeddings.trainer import (
     DEFAULT_LR,
+    DEFAULT_NUM_EVAL_SAMPLES,
     DEFAULT_STEPS_PER_EPOCH,
+    DEFAULT_STEPS_PER_EVAL,
     DEFAULT_STEPS_PER_SAVE,
     DEFAULT_TOTAL_STEPS,
     KL3MTorchTrainer,
@@ -49,11 +51,8 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
             device (str): The device to use.
             num_workers (int): The number of workers to use in background tasks.
         """
-        # call super
-        super().__init__(config_path, checkpoint_path, device, num_workers)
-
-        # then override the deepspeed logger
-        deepspeed.logger = self.logger
+        # load this early
+        self.training_config = self.load_training_config(config_path)
 
         # set config
         if "deepspeed" in self.training_config:
@@ -85,10 +84,16 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
                     "enabled": True,
                 }
 
-        # set up the optimizer
+        # initialize the zero stage as we need it for the optimizer setup case handling
         self.zero_stage = self.deepspeed_config.get("zero_optimization", {}).get(
             "stage", 0
         )
+
+        # call super
+        super().__init__(config_path, checkpoint_path, device, num_workers)
+
+        # then override the deepspeed logger
+        deepspeed.logger = self.logger
 
         # set up init args
         ds_args = {
@@ -284,7 +289,7 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         if model_path.exists():
             model_path.unlink()
 
-    # pylint: disable=too-many-statements
+    # pylint: disable=too-many-statements,too-many-branches
     def train(self, steps: Optional[int] = None) -> bool:
         """
         Train the model.
@@ -306,6 +311,13 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         steps_per_save = self.training_config.get(
             "steps_per_save", DEFAULT_STEPS_PER_SAVE
         )
+        steps_per_eval = self.training_config.get(
+            "steps_per_eval", DEFAULT_STEPS_PER_EVAL
+        )
+        num_eval_samples = self.training_config.get(
+            "num_eval_samples", DEFAULT_NUM_EVAL_SAMPLES
+        )
+
         optimizer_config = self.training_config.get("optimizer", {})
         total_steps = optimizer_config.get("total_steps", DEFAULT_TOTAL_STEPS)
 
@@ -317,6 +329,13 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         step = state["step"]
         if hasattr(self.scheduler, "current_step"):
             self.scheduler.current_step = step  # type: ignore
+
+        # populate the eval sample
+        print("Populating eval samples...")
+        self.load_eval_data(num_eval_samples)
+        print(f"Populated {len(self.eval_samples)} eval samples.")
+
+        # NB: we can't reliably use torch.compile with deepspeed
 
         # start training loop
         start_time = time.time()
@@ -344,7 +363,14 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
 
                 # get the sample
                 sample_start_time = time.time()
-                sample = self.get_next_sample()
+                while True:
+                    try:
+                        sample = self.get_next_sample()
+                        break
+                    except Exception as e:  # pylint: disable=broad-except
+                        self.log("Error getting sample: %s", str(e), level="error")
+                        self.log(traceback.format_exc(), level="error")
+                        time.sleep(1)
                 sample_end_time = time.time()
                 self.step_entry["sample_time"] = sample_end_time - sample_start_time
 
@@ -365,12 +391,23 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
                 end_time = time.time()
                 self.step_entry["step_time"] = end_time - start_time
 
+                # check if we are doing eval
+                if step % steps_per_eval == 0 and step > 0:
+                    eval_results = self.eval()
+                    self.eval_ts.append(eval_results["mean"])
+
+                # get final time
+                end_time = time.time()
+                self.step_entry["step_time"] = end_time - start_time
+
                 # get trailing loss
+                last_eval = self.eval_ts[-1] if len(self.eval_ts) > 0 else 0.0
                 prog_bar.set_postfix(
                     {
                         "loss": f"{self.step_entry.get("loss", 99.9):0.2f}",
                         "loss_100": f"{self.get_trailing_loss(100):0.3f}",
                         "loss_1000": f"{self.get_trailing_loss(1000):0.3f}",
+                        "last_eval": f"{last_eval:0.2f}",
                         "lr": f"{self.get_lr():1.1e}",
                         "step_time": f"{self.step_entry['step_time']:0.2f}",
                     }

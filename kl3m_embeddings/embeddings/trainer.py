@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import queue
+import statistics
 import time
 import traceback
 from pathlib import Path
@@ -27,11 +28,10 @@ import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 from transformers.modeling_outputs import MaskedLMOutput
 
+# project
 from kl3m_embeddings.schedulers.exponential_warmup_cooldown import (
     ExponentialWarmupCooldownScheduler,
 )
-
-# project
 from kl3m_embeddings.schedulers.linear_warmup_cooldown import (
     LinearWarmupCooldownScheduler,
 )
@@ -42,13 +42,15 @@ DEFAULT_LR = 1e-4
 DEFAULT_WARMUP_STEPS = 10000
 DEFAULT_TOTAL_STEPS = 100000
 DEFAULT_STEPS_PER_EPOCH = 1000000
-DEFAULT_STEPS_PER_SAVE = 10
+DEFAULT_STEPS_PER_SAVE = 1000
+DEFAULT_STEPS_PER_EVAL = 1000
+DEFAULT_NUM_EVAL_SAMPLES = 1000
 DEFAULT_ENDPOINT = "http://localhost:8000"
 DEFAULT_MAX_GRAD_NORM = 1.0
 DEFAULT_SAMPLE_SLEEP = 10.0
 
 
-# pylint: disable=too-many-instance-attributes,too-many-positional-arguments
+# pylint: disable=too-many-instance-attributes,too-many-positional-arguments,too-many-public-methods
 class KL3MTorchTrainer(abc.ABC):
     """
     Base KL3M torch-only trainer class that wraps:
@@ -95,6 +97,10 @@ class KL3MTorchTrainer(abc.ABC):
         # set the device
         self.device = device
 
+        # if cuda, set float32 matmul precision
+        if self.device == "cuda":
+            torch.set_float32_matmul_precision("high")
+
         # load the training config
         self.training_config = self.load_training_config(config_path)
         self.tokenizer_name = self.training_config.get(
@@ -119,23 +125,6 @@ class KL3MTorchTrainer(abc.ABC):
         self.optimizer: Optional[torch.optim.Optimizer] = None
         self.scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None
 
-        # load them
-        self.setup_optimizer()
-        self.setup_scheduler()
-
-        # open the log path and setup log step structure
-        self.log_path = self.checkpoint_path / "log.jsonl"
-        self.log_path.touch()
-        self.log_file = self.log_path.open("at+", encoding="utf-8")
-        self.object_log_path = self.checkpoint_path / "objects.jsonl.gz"
-        self.object_log_path.touch()
-        self.object_log_file = gzip.open(self.object_log_path, "at+", encoding="utf-8")
-
-        # setup log entry structures
-        self.step_entry: dict[str, Any] = {}
-        self.step_logs: list[dict] = []
-        self.loss_ts: list[float] = []
-
         # set up optional sample queue for models that can lookahead
         # NB: be careful if you increase this ratio, as extra samples are stored on the target device
         # by default and you may thus OOM VRAM unexpectedly.
@@ -146,6 +135,34 @@ class KL3MTorchTrainer(abc.ABC):
             max_workers=num_workers,
             thread_name_prefix="kl3m_trainer",
         )
+
+        # start populating the queue before the optimizer and scheduler
+        for _ in range(self.sample_queue.maxsize):
+            self.sample_thread_pool.submit(self.populate_queue)
+
+        # load them
+        self.setup_optimizer()
+        self.setup_scheduler()
+
+        # open the log path and setup log step structure
+        self.log_path = self.checkpoint_path / "log.jsonl"
+        self.log_path.touch()
+        self.log_file = self.log_path.open("at+", encoding="utf-8")
+        self.eval_path = self.checkpoint_path / "eval.jsonl"
+        self.eval_path.touch()
+        self.eval_file = self.eval_path.open("at+", encoding="utf-8")
+        self.object_log_path = self.checkpoint_path / "objects.jsonl.gz"
+        self.object_log_path.touch()
+        self.object_log_file = gzip.open(self.object_log_path, "at+", encoding="utf-8")
+
+        # store eval samples on cpu permanently
+        self.eval_samples: list[dict] = []
+
+        # setup log entry structures
+        self.step_entry: dict[str, Any] = {}
+        self.step_logs: list[dict] = []
+        self.loss_ts: list[float] = []
+        self.eval_ts: list[float] = []
 
         # register the shutdown handler
         atexit.register(self.shutdown)
@@ -181,6 +198,12 @@ class KL3MTorchTrainer(abc.ABC):
             self.log_file.close()
         except Exception as e:  # pylint: disable=broad-except
             self.logger.error("Error closing log file: %s", str(e))
+
+        # close the eval file
+        try:
+            self.eval_file.close()
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.error("Error closing eval file: %s", str(e))
 
         # close the object log file
         try:
@@ -485,6 +508,15 @@ class KL3MTorchTrainer(abc.ABC):
             Any: The sample.
         """
 
+    @abc.abstractmethod
+    def load_eval_data(self, num_samples: int) -> None:
+        """
+        Load the evaluation data.
+
+        Args:
+            num_samples (int): The number of samples to load.
+        """
+
     def populate_queue(self) -> None:
         """
         Populate the sample queue.
@@ -568,7 +600,69 @@ class KL3MTorchTrainer(abc.ABC):
 
         return {"step": step, "epoch": epoch}
 
-    # pylint: disable=too-many-statements
+    def eval(self) -> dict[str, Any]:
+        """
+        Run an eval loop by calculating the loss distribution on the eval samples.
+
+        Disable the gradient calculation during this phase.
+
+        Returns:
+            dict: The evaluation results.
+        """
+        # log
+        self.log("Running eval loop")
+
+        # set the model to eval mode
+        self.model.eval()  # type: ignore
+
+        # disable gradient calculation
+        sample_loss = []
+        with torch.no_grad():
+            # get the eval loss distribution
+            for sample in self.eval_samples:
+                # move onto device
+                for key in sample:
+                    if isinstance(sample[key], torch.Tensor):
+                        sample[key] = sample[key].to(self.device)
+                outputs = self.forward(**sample)
+                sample_loss.append(outputs.loss.item())
+
+        # set the model back to train mode
+        self.model.train()  # type: ignore
+
+        # get 5th and 95th percentiles
+        quantiles = statistics.quantiles(sample_loss, n=100)
+
+        # get stats
+        eval_stats = {
+            "mean": statistics.mean(sample_loss),
+            "median": statistics.median(sample_loss),
+            "std": statistics.stdev(sample_loss),
+            "min": min(sample_loss),
+            "p5": quantiles[5],
+            "p95": quantiles[95],
+            "max": max(sample_loss),
+            "num_samples": len(sample_loss),
+        }
+
+        # log it
+        self.log("Eval stats: %s", json.dumps(eval_stats, indent=2))
+
+        # write to eval file
+        self.eval_file.write(
+            json.dumps(
+                {
+                    "step": self.step_entry.get("step", 0),
+                    **eval_stats,
+                }
+            )
+            + "\n"
+        )
+        self.eval_file.flush()
+
+        return eval_stats
+
+    # pylint: disable=too-many-statements,too-many-branches,too-many-positional-arguments
     def train(self, steps: Optional[int] = None) -> bool:
         """
         Train the model.
@@ -579,16 +673,18 @@ class KL3MTorchTrainer(abc.ABC):
         Returns:
             bool: Whether the training was successful.
         """
-        # start populating the queue
-        for _ in range(self.sample_queue.maxsize):
-            self.sample_thread_pool.submit(self.populate_queue)
-
         # get key training params
         steps_per_epoch = self.training_config.get(
             "steps_per_epoch", DEFAULT_STEPS_PER_EPOCH
         )
         steps_per_save = self.training_config.get(
             "steps_per_save", DEFAULT_STEPS_PER_SAVE
+        )
+        steps_per_eval = self.training_config.get(
+            "steps_per_eval", DEFAULT_STEPS_PER_EVAL
+        )
+        num_eval_samples = self.training_config.get(
+            "num_eval_samples", DEFAULT_NUM_EVAL_SAMPLES
         )
         optimizer_config = self.training_config.get("optimizer", {})
         max_grad_norm = optimizer_config.get("max_grad_norm", DEFAULT_MAX_GRAD_NORM)
@@ -606,9 +702,21 @@ class KL3MTorchTrainer(abc.ABC):
         if hasattr(self.scheduler, "current_step"):
             self.scheduler.current_step = step  # type: ignore
 
+        # populate the eval sample
+        print("Populating eval samples...")
+        self.load_eval_data(num_eval_samples)
+        print(f"Populated {len(self.eval_samples)} eval samples.")
+
         # start training loop
         start_time = time.time()
         train_status = False
+
+        # compile the whole model here
+        self.log("Beginning model compilation...")
+        self.model = torch.compile(self.model, fullgraph=True).to(
+            device=self.device, dtype=self.precision
+        )
+        self.log("Model compiled and moved to device")
 
         # wait to put the model into the right device until now
         with torch.amp.autocast(device_type=self.device, dtype=self.precision):
@@ -635,7 +743,14 @@ class KL3MTorchTrainer(abc.ABC):
 
                     # get the sample
                     sample_start_time = time.time()
-                    sample = self.get_next_sample()
+                    while True:
+                        try:
+                            sample = self.get_next_sample()
+                            break
+                        except Exception as e:  # pylint: disable=broad-except
+                            self.log("Error getting sample: %s", str(e), level="error")
+                            self.log(traceback.format_exc(), level="error")
+                            time.sleep(1)
                     sample_end_time = time.time()
                     self.step_entry["sample_time"] = sample_end_time - sample_start_time
 
@@ -659,16 +774,23 @@ class KL3MTorchTrainer(abc.ABC):
                     if step % steps_per_save == 0 and step > 0:
                         self.save()
 
+                    # check if we are doing eval
+                    if step % steps_per_eval == 0 and step > 0:
+                        eval_results = self.eval()
+                        self.eval_ts.append(eval_results["mean"])
+
                     # get final time
                     end_time = time.time()
                     self.step_entry["step_time"] = end_time - start_time
 
                     # get trailing loss
+                    last_eval = self.eval_ts[-1] if len(self.eval_ts) > 0 else 0.0
                     prog_bar.set_postfix(
                         {
                             "loss": f"{self.step_entry.get("loss", 99.9):0.2f}",
                             "loss_100": f"{self.get_trailing_loss(100):0.3f}",
                             "loss_1000": f"{self.get_trailing_loss(1000):0.3f}",
+                            "last_eval": f"{last_eval:0.2f}",
                             "lr": f"{self.get_lr():1.1e}",
                             "step_time": f"{self.step_entry['step_time']:0.2f}",
                         }

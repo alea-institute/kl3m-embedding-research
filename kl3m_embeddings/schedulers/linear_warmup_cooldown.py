@@ -118,20 +118,3 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
             str: The string representation.
         """
         return f"LinearWarmupCooldownScheduler(lr={self.current_lr}, step={self.current_step})"
-
-
-if __name__ == "__main__":
-    # test the scheduler
-    optimizer = torch.optim.Adam([torch.zeros(1)], lr=1e-4)
-    scheduler = LinearWarmupCooldownScheduler(
-        optimizer,
-        start_lr=0.0001,
-        peak_lr=0.0003,
-        warmup_steps=10000,
-        peak_steps=90000,
-        total_steps=200000,
-    )
-    for step in range(0, 210000, 1000):
-        print(step, scheduler.get_lr())
-        if scheduler.current_step == 2000000:
-            break

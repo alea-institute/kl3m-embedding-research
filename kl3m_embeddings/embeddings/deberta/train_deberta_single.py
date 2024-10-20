@@ -9,10 +9,9 @@ they can be used with the standard DebertaV2 huggingface architecture on the nor
 
 # imports
 import argparse
-from collections import Counter
 from math import log2
 from pathlib import Path
-from random import choices, randint, random
+from random import randint, random
 from typing import Optional
 
 # packages
@@ -24,6 +23,7 @@ from transformers import DebertaV2Config, PreTrainedTokenizerFast
 from kl3m_embeddings.embeddings.deberta.matroyshka_deberta import (
     MatroyshkaDebertaV2ForMaskedLM,
 )
+from kl3m_embeddings.embeddings.samples.embedding import get_embedding_sample
 from kl3m_embeddings.embeddings.trainer import KL3MTorchTrainer
 from kl3m_embeddings.utils.models import get_model_size_str
 
@@ -57,6 +57,7 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
         self.matroyshka_probability = self.training_config.get(
             "matroyshka_probability", 0.5
         )
+        self.matroyshka_min_log2 = self.training_config.get("matroyshka_min_log2", 3)
 
         # get the endpoint url with client
         self.endpoint_url = self.training_config.get("endpoint_url", DEFAULT_ENDPOINT)
@@ -136,79 +137,52 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
             dict[str, torch.Tensor]: The sample.
         """
         # get a task based on probability dist
-        task = choices(
-            population=list(self.task_probabilities.keys()),
-            weights=list(self.task_probabilities.values()),
-            k=1,
-        ).pop()
-
-        # get url and request an MLM batch
-        batch_url = f"{self.endpoint_url.rstrip('/')}/batch/{task}"
-        batch_post_body = {
-            "batch_size": self.training_config.get("batch_size", 1),
-        }
-
-        # post request and try again until we get something
-        response = None
-        while True:
-            try:
-                response = self.endpoint_client.post(
-                    batch_url, json=batch_post_body, timeout=1.0
-                )
-                if response.status_code == 200:
-                    break
-
-                if response.status_code not in (503,):
-                    response.raise_for_status()
-            except (
-                httpx.ReadTimeout,
-                httpx.ConnectTimeout,
-            ):
-                self.log("Timeout on request, retrying...", level="warning")
-                continue
-            except Exception as e:
-                self.log("Error on request: %s", str(e), level="error")
-                raise e
-
-        # fail if we got here somehow
-        if response is None:
-            raise ValueError("No response from server")
-
-        # parse and convert to torch tensors on device
-        data = response.json()
-
-        # count the datasets and add them to the current entry
-        dataset_list = [r["dataset_id"] for r in data]
-        dataset_count = Counter(dataset_list)
-        self.step_entry["datasets"] = dataset_count
-
-        # update the current log entry
-        object_list = [r["identifier"] for r in data]
-        self.step_entry["objects"] = object_list
-
-        # convert data to tensor dict and return
-        result = {
-            "input_ids": torch.tensor(
-                [r["input_ids"] for r in data],
-                device=device,
-            ),
-            "attention_mask": torch.tensor(
-                [r["attention_mask"] for r in data],
-                device=device,
-            ),
-            "labels": torch.tensor(
-                [r["labels"] for r in data],
-                device=device,
-            ),
-        }
+        result, sample_metadata = get_embedding_sample(
+            task_probabilities=self.task_probabilities,
+            batch_size=self.training_config.get("batch_size", 1),
+            endpoint_url=self.endpoint_url,
+            endpoint_client=self.endpoint_client,
+            logger=self.logger,
+            device=device or self.device,
+        )
 
         # get matroyshka samples
         if random() < self.matroyshka_probability:
             max_log2 = int(log2(self.model.config.hidden_size)) - 1  # type: ignore
-            result["reduced_dim"] = 2 ** randint(1, max_log2)
+            result["reduced_dim"] = 2 ** randint(self.matroyshka_min_log2, max_log2)
+            self.step_entry["reduced_dim"] = result["reduced_dim"]
+
+        # update step entry
+        self.step_entry.update(sample_metadata)
+
+        # handle matroyshka sampling
+        if random() < self.matroyshka_probability:
+            max_log2 = int(log2(self.model.config.hidden_size)) - 1  # type: ignore
+            result["reduced_dim"] = 2 ** randint(self.matroyshka_min_log2, max_log2)
             self.step_entry["reduced_dim"] = result["reduced_dim"]
 
         return result
+
+    def load_eval_data(self, num_samples: int) -> None:
+        """
+        Get evaluation data for the model.
+
+        Args:
+            num_samples (int): The number of samples to get.
+        """
+        # get the samples
+        while len(self.eval_samples) < num_samples:
+            result, _ = get_embedding_sample(
+                task_probabilities=self.task_probabilities,
+                batch_size=1,
+                endpoint_url=self.endpoint_url,
+                endpoint_client=self.endpoint_client,
+                logger=self.logger,
+                device="cpu",
+            )
+
+            if result:
+                self.eval_samples.append(result)
 
 
 if __name__ == "__main__":
