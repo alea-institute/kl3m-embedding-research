@@ -5,7 +5,7 @@ Example log record:
 {"step": 426, "epoch": 1, "lr": 9.075e-05, "reduced_dim": 16, "task": "mlm", "num_samples": 64, "num_identifiers": 4, "num_tokens": 8100, "samples_by_dataset": {"govinfo": 22, "dockets": 21, "fdlp": 21}, "tokens_by_dataset": {"govinfo": 2816, "dockets": 2688, "fdlp": 2596}, "sample_time": 0.02536940574645996, "loss": 6.867125988006592, "forward_time": 0.014142751693725586, "backward_time": 0.004799365997314453, "optimizer_time": 0.0006134510040283203, "step_time": 0.04641866683959961, "time": "2024-10-20T09:12:13.891810"}
 
 Example eval record:
-{"step": 19900, "mean": 3.8377096504606305, "median": 4.7862560749053955, "std": 2.825638274971136, "min": 0.05165662243962288, "p5": 0.07757293790578842, "p95": 7.967259349822998, "max": 9.941807746887207, "num_samples": 1000}
+{"step": 6600, "mean": 5.891099691703916, "median": 6.126824140548706, "std": 1.7903133445412809, "min": 0.14515654742717743, "p5": 2.727285532951355, "p95": 8.570741653442383, "max": 11.777612686157227, "num_samples": 1000, "svd_mean_ratio_1": 3.7364490032196045, "svd_median_ratio_1": 4.241237550973892}
 
 """
 
@@ -137,6 +137,8 @@ def calculate_eval_statistics(eval_df: pl.DataFrame) -> pl.DataFrame:
             pl.col("median").tail(10).mean().alias("last_10_median"),
             # trend
             pl.col("median").tail(10).diff().mean().alias("last_10_median_diff_mean"),
+            # last svd_mean_ratio_1
+            pl.col("svd_mean_ratio_1").last().alias("last_svd_mean_ratio_1"),
             # loss stats
             pl.col("mean").mean().alias("mean_loss"),
             pl.col("mean").std().alias("std_loss"),
@@ -203,7 +205,7 @@ def plot_loss_by_step(
         loss_data["rolling_min"],
         loss_data["rolling_max"],
         color="#c6c6b8",
-        alpha=0.1,
+        alpha=0.25,
     )
     plt.plot(loss_data["step"], loss_data["rolling_mean"], color="#d0aaaa", alpha=0.9)
 
@@ -248,7 +250,7 @@ def plot_loss_by_step(
             eval_loss_p5["mean"],
             eval_loss_p95["mean"],
             color="#aaaad0",
-            alpha=0.1,
+            alpha=0.25,
         )
         plt.scatter(
             eval_loss_mean["step"],
@@ -291,6 +293,34 @@ def plot_loss_by_step(
 
     # save the plot
     plot_path = output_path / "loss_by_step.png"
+    plt.savefig(plot_path)
+    plt.close()
+
+    return plot_path
+
+
+def plot_svd_metrics(eval_df: pl.DataFrame, output_path: Path) -> Path:
+    """
+    Plot the SVD metrics.
+
+    Args:
+        df (pl.DataFrame): The training log data.
+        output_path (Path): The output path for the plot.
+
+    Returns:
+        Path to image
+    """
+    # plot the SVD metrics by step
+    plt.figure(figsize=(12, 8))
+    plt.plot(eval_df["step"], eval_df["svd_mean_ratio_1"])
+    plt.plot(eval_df["step"], eval_df["svd_median_ratio_1"])
+    plt.title("SVD Metrics by Step")
+    plt.xlabel("Step")
+    plt.ylabel("SVD Ratio Metrics")
+    plt.legend(["Mean Ratio 1", "Median Ratio 1"])
+
+    # save the plot
+    plot_path = output_path / "svd_metrics.png"
     plt.savefig(plot_path)
     plt.close()
 
@@ -447,16 +477,29 @@ if __name__ == "__main__":
     print("Log Statistics:")
     print(statistics)
 
+    text_output = f"Log Statistics:\n{statistics.write_json()}\n"
+
     try:
         eval_statistics = calculate_eval_statistics(eval_data)
         print("Eval Statistics:")
         print(eval_statistics)
+        text_output += f"\n\nEval Statistics:\n{eval_statistics.write_json()}\n"
     except Exception as e:  # pylint: disable=broad-except
         print(f"Error calculating eval statistics: {e}")
+
+    # output all stats to stats.txt
+    with open(
+        artifact_output_path / "stats.txt", "wt", encoding="utf-8"
+    ) as output_file:
+        output_file.write(text_output)
 
     # plot loss by step
     loss_by_step_plot = plot_loss_by_step(log_data, eval_data, artifact_output_path)
     print(f"Loss by Step Plot: {loss_by_step_plot}")
+
+    # plot svd metrics
+    svd_metrics_plot = plot_svd_metrics(eval_data, artifact_output_path)
+    print(f"SVD Metrics Plot: {svd_metrics_plot}")
 
     # plot step time components
     step_time_components_plot = plot_step_time_components(

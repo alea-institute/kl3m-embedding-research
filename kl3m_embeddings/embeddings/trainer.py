@@ -29,6 +29,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerFast
 from transformers.modeling_outputs import MaskedLMOutput
 
 # project
+from kl3m_embeddings.embeddings.stats.svds import get_layer_svd_stats
 from kl3m_embeddings.schedulers.exponential_warmup_cooldown import (
     ExponentialWarmupCooldownScheduler,
 )
@@ -44,9 +45,10 @@ DEFAULT_TOTAL_STEPS = 100000
 DEFAULT_STEPS_PER_EPOCH = 1000000
 DEFAULT_STEPS_PER_SAVE = 1000
 DEFAULT_STEPS_PER_EVAL = 1000
-DEFAULT_NUM_EVAL_SAMPLES = 1000
+DEFAULT_NUM_EVAL_SAMPLES = 10000
 DEFAULT_ENDPOINT = "http://localhost:8000"
 DEFAULT_MAX_GRAD_NORM = 1.0
+DEFAULT_MAX_GRAD_NORM_PCT = 90
 DEFAULT_SAMPLE_SLEEP = 10.0
 
 
@@ -162,6 +164,7 @@ class KL3MTorchTrainer(abc.ABC):
         self.step_entry: dict[str, Any] = {}
         self.step_logs: list[dict] = []
         self.loss_ts: list[float] = []
+        self.loss_norm_ts: list[float] = []
         self.eval_ts: list[float] = []
 
         # register the shutdown handler
@@ -627,26 +630,46 @@ class KL3MTorchTrainer(abc.ABC):
                 outputs = self.forward(**sample)
                 sample_loss.append(outputs.loss.item())
 
+            # get the state dict on cpu efficiently for svd calcs
+            layer_stats = {
+                key: get_layer_svd_stats(value.cpu())
+                for key, value in self.model.state_dict().items()  # type: ignore
+                if len(value.shape) == 2 and key.endswith("intermediate.dense.weight")
+            }
+
+            # get the mean and median of the svd values for the intermediate layers
+            mean_svds = [
+                float(layer_stats[layer_name]["mean_ratio_1"])
+                for layer_name in layer_stats
+            ]
+
+            median_svds = [
+                float(layer_stats[layer_name]["median_ratio_1"])
+                for layer_name in layer_stats
+            ]
+
+            # get 5th and 95th percentiles
+            quantiles = statistics.quantiles(sample_loss, n=100)
+
+            # get stats
+            eval_stats = {
+                "mean": statistics.mean(sample_loss),
+                "median": statistics.median(sample_loss),
+                "std": statistics.stdev(sample_loss),
+                "min": min(sample_loss),
+                "p5": quantiles[5],
+                "p95": quantiles[95],
+                "max": max(sample_loss),
+                "num_samples": len(sample_loss),
+                "svd_mean_ratio_1": statistics.mean(mean_svds),
+                "svd_median_ratio_1": statistics.mean(median_svds),
+            }
+
         # set the model back to train mode
         self.model.train()  # type: ignore
 
-        # get 5th and 95th percentiles
-        quantiles = statistics.quantiles(sample_loss, n=100)
-
-        # get stats
-        eval_stats = {
-            "mean": statistics.mean(sample_loss),
-            "median": statistics.median(sample_loss),
-            "std": statistics.stdev(sample_loss),
-            "min": min(sample_loss),
-            "p5": quantiles[5],
-            "p95": quantiles[95],
-            "max": max(sample_loss),
-            "num_samples": len(sample_loss),
-        }
-
         # log it
-        self.log("Eval stats: %s", json.dumps(eval_stats, indent=2))
+        self.log("Eval stats: %s", json.dumps(eval_stats, default=str, indent=2))
 
         # write to eval file
         self.eval_file.write(
@@ -654,13 +677,77 @@ class KL3MTorchTrainer(abc.ABC):
                 {
                     "step": self.step_entry.get("step", 0),
                     **eval_stats,
-                }
+                },
+                default=str,
             )
             + "\n"
         )
         self.eval_file.flush()
 
         return eval_stats
+
+    def get_grad_norm(self) -> float:
+        """
+        Safely get the gradient norm.
+
+        Returns:
+            float: The gradient norm.
+        """
+        try:
+            grad_tensors = torch.stack(
+                [
+                    param.grad.detach().norm()
+                    for param in self.model.parameters()  # type: ignore
+                    if param.grad is not None
+                ]
+            )
+            grad_norm = torch.norm(grad_tensors).item()
+        except Exception:  # pylint: disable=broad-except
+            grad_norm = 0.0
+
+        return grad_norm
+
+    def clip_grad(self, grad_norm: float) -> bool:
+        """
+        Clip the gradient.
+
+        Args:
+            grad_norm (float): The gradient norm.
+
+        Returns:
+            bool: Whether the gradient was clipped.
+        """
+        # get the relevant params
+        optimizer_config = self.training_config.get("optimizer", {})
+        max_grad_norm = optimizer_config.get("max_grad_norm", DEFAULT_MAX_GRAD_NORM)
+        max_grad_norm_pct = optimizer_config.get(
+            "max_grad_norm_pct", DEFAULT_MAX_GRAD_NORM_PCT
+        )
+
+        if max_grad_norm:
+            if not max_grad_norm_pct:
+                clip_threshold = max_grad_norm
+            else:
+                if len(self.loss_norm_ts) < 100:
+                    clip_threshold = max_grad_norm
+                else:
+                    clip_threshold = statistics.quantiles(self.loss_norm_ts, n=100)[
+                        max_grad_norm_pct
+                    ]
+
+            # log it
+            self.log("Clipping gradients at %0.2f", clip_threshold)
+            self.step_entry["clip_threshold"] = clip_threshold
+
+            # clip based on threshold if we're over
+            if grad_norm > clip_threshold:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),  # type: ignore
+                    clip_threshold,
+                )
+                return True
+
+        return False
 
     # pylint: disable=too-many-statements,too-many-branches,too-many-positional-arguments
     def train(self, steps: Optional[int] = None) -> bool:
@@ -687,7 +774,6 @@ class KL3MTorchTrainer(abc.ABC):
             "num_eval_samples", DEFAULT_NUM_EVAL_SAMPLES
         )
         optimizer_config = self.training_config.get("optimizer", {})
-        max_grad_norm = optimizer_config.get("max_grad_norm", DEFAULT_MAX_GRAD_NORM)
         gradient_accumulation_steps = optimizer_config.get(
             "gradient_accumulation_steps", 1
         )
@@ -699,6 +785,7 @@ class KL3MTorchTrainer(abc.ABC):
         # tracking vars
         epoch = state["epoch"]
         step = state["step"]
+        total_tokens = 0
         if hasattr(self.scheduler, "current_step"):
             self.scheduler.current_step = step  # type: ignore
 
@@ -708,7 +795,7 @@ class KL3MTorchTrainer(abc.ABC):
         print(f"Populated {len(self.eval_samples)} eval samples.")
 
         # start training loop
-        start_time = time.time()
+        train_start_time = time.time()
         train_status = False
 
         # compile the whole model here
@@ -736,7 +823,7 @@ class KL3MTorchTrainer(abc.ABC):
                         self.sample_thread_pool.submit(self.populate_queue)
 
                     # update the entry
-                    start_time = time.time()
+                    step_start_time = time.time()
                     self.step_entry["step"] = step
                     self.step_entry["epoch"] = epoch
                     self.step_entry["lr"] = self.get_lr()
@@ -760,11 +847,13 @@ class KL3MTorchTrainer(abc.ABC):
                     # backward pass
                     self.backward(outputs.loss)
 
-                    if max_grad_norm:
-                        torch.nn.utils.clip_grad_norm_(
-                            self.model.parameters(),  # type: ignore
-                            max_grad_norm,  # type: ignore
-                        )
+                    # add the raw norm to the time series
+                    grad_norm = self.get_grad_norm()
+                    if step % gradient_accumulation_steps == 0 and step > 0:
+                        self.loss_norm_ts.append(grad_norm)
+
+                    # clip (if configured)
+                    self.clip_grad(grad_norm)
 
                     # step optimizer
                     if (step + 1) % gradient_accumulation_steps == 0:
@@ -780,8 +869,16 @@ class KL3MTorchTrainer(abc.ABC):
                         self.eval_ts.append(eval_results["mean"])
 
                     # get final time
-                    end_time = time.time()
-                    self.step_entry["step_time"] = end_time - start_time
+                    step_end_time = time.time()
+                    self.step_entry["step_time"] = step_end_time - step_start_time
+
+                    # get the time from end of step to start of training
+                    self.step_entry["total_time"] = step_end_time - train_start_time
+
+                    # calculate the rate from total number of tokens
+                    total_tokens += self.step_entry.get("num_tokens", 0)
+                    token_rate = total_tokens / max(self.step_entry["total_time"], 1.0)
+                    self.step_entry["token_rate"] = token_rate
 
                     # get trailing loss
                     last_eval = self.eval_ts[-1] if len(self.eval_ts) > 0 else 0.0
@@ -791,8 +888,10 @@ class KL3MTorchTrainer(abc.ABC):
                             "loss_100": f"{self.get_trailing_loss(100):0.3f}",
                             "loss_1000": f"{self.get_trailing_loss(1000):0.3f}",
                             "last_eval": f"{last_eval:0.2f}",
+                            "grad_norm": f"{grad_norm:0.2f}",
                             "lr": f"{self.get_lr():1.1e}",
                             "step_time": f"{self.step_entry['step_time']:0.2f}",
+                            "token_rate": f"{token_rate:0.2f}",
                         }
                     )
 

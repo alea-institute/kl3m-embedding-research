@@ -289,6 +289,27 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         if model_path.exists():
             model_path.unlink()
 
+    def get_grad_norm(self) -> float:
+        """
+        Safely get the gradient norm under deepspeed, which is
+        a bit trickier than plain torch.
+
+        Returns:
+            float: The gradient norm.
+        """
+        try:
+            grad_tensors = torch.stack(
+                [
+                    deepspeed.utils.safe_get_full_grad(param).norm()
+                    for param in self.deepspeed_engine.parameters()
+                ]
+            )
+            grad_norm = torch.norm(grad_tensors.detach()).item()
+        except Exception:  # pylint: disable=broad-except
+            grad_norm = 0.0
+
+        return grad_norm
+
     # pylint: disable=too-many-statements,too-many-branches
     def train(self, steps: Optional[int] = None) -> bool:
         """
@@ -317,8 +338,10 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         num_eval_samples = self.training_config.get(
             "num_eval_samples", DEFAULT_NUM_EVAL_SAMPLES
         )
-
         optimizer_config = self.training_config.get("optimizer", {})
+        gradient_accumulation_steps = optimizer_config.get(
+            "gradient_accumulation_steps", 1
+        )
         total_steps = optimizer_config.get("total_steps", DEFAULT_TOTAL_STEPS)
 
         # get state
@@ -327,6 +350,7 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         # tracking vars
         epoch = state["epoch"]
         step = state["step"]
+        total_tokens = 0
         if hasattr(self.scheduler, "current_step"):
             self.scheduler.current_step = step  # type: ignore
 
@@ -336,9 +360,18 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
         print(f"Populated {len(self.eval_samples)} eval samples.")
 
         # NB: we can't reliably use torch.compile with deepspeed
+        try:
+            # compile the whole model here
+            self.log("Beginning model compilation...")
+            self.model = torch.compile(self.model, fullgraph=True).to(
+                device=self.device, dtype=self.precision
+            )
+            self.log("Model compiled and moved to device")
+        except Exception as e:  # pylint: disable=broad-except
+            self.log("Error compiling model: %s", str(e), level="error")
 
         # start training loop
-        start_time = time.time()
+        train_start_time = time.time()
         train_status = False
         try:
             prog_bar = tqdm.tqdm(
@@ -356,7 +389,7 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
                     self.sample_thread_pool.submit(self.populate_queue)
 
                 # update the entry
-                start_time = time.time()
+                step_start_time = time.time()
                 self.step_entry["step"] = step
                 self.step_entry["epoch"] = epoch
                 self.step_entry["lr"] = self.get_lr()
@@ -380,16 +413,21 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
                 # backward pass
                 self.backward(outputs.loss)
 
+                # add the raw norm to the time series
+                grad_norm = self.get_grad_norm()
+
+                if step % gradient_accumulation_steps == 0 and step > 0:
+                    self.loss_norm_ts.append(grad_norm)
+
+                # clip (if configured)
+                self.clip_grad(grad_norm)
+
                 # step optimizer
                 self.step()
 
                 # log training metrics
-                if step % steps_per_save == 0:
+                if step % steps_per_save == 0 and step > 0:
                     self.save()
-
-                # get final time
-                end_time = time.time()
-                self.step_entry["step_time"] = end_time - start_time
 
                 # check if we are doing eval
                 if step % steps_per_eval == 0 and step > 0:
@@ -397,8 +435,16 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
                     self.eval_ts.append(eval_results["mean"])
 
                 # get final time
-                end_time = time.time()
-                self.step_entry["step_time"] = end_time - start_time
+                step_end_time = time.time()
+                self.step_entry["step_time"] = step_end_time - step_start_time
+
+                # get the time from end of step to start of training
+                self.step_entry["total_time"] = step_end_time - train_start_time
+
+                # calculate the rate from total number of tokens
+                total_tokens += self.step_entry.get("num_tokens", 0)
+                token_rate = total_tokens / max(self.step_entry["total_time"], 1.0)
+                self.step_entry["token_rate"] = token_rate
 
                 # get trailing loss
                 last_eval = self.eval_ts[-1] if len(self.eval_ts) > 0 else 0.0
@@ -408,8 +454,10 @@ class KL3MDeepspeedTrainer(KL3MTorchTrainer):
                         "loss_100": f"{self.get_trailing_loss(100):0.3f}",
                         "loss_1000": f"{self.get_trailing_loss(1000):0.3f}",
                         "last_eval": f"{last_eval:0.2f}",
+                        "grad_norm": f"{grad_norm:0.2f}",
                         "lr": f"{self.get_lr():1.1e}",
                         "step_time": f"{self.step_entry['step_time']:0.2f}",
+                        "token_rate": f"{token_rate:0.2f}",
                     }
                 )
 

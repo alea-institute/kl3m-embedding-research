@@ -53,17 +53,18 @@ $ PYTHONPATH=. poetry run python3 kl3m_embeddings/embeddings/describe.py models/
 
 **Progress Example**
 ```
-Training:   1%|▌         | 1207/200000 [01:21<2:35:35, 21.29it/s, loss=5.54, loss_100=5.098, loss_1000=6.985, last_eval=7.50, lr=2.0e-04, step_time=0.05]
+Training:   4%|█▊        | 7247/200000 [09:38<4:41:05, 11.43it/s, loss=1.37, loss_100=2.623, loss_1000=4.955, last_eval=5.69, grad_norm=1.12, lr=2.0e-04, step_time=0.08, token_rate=86553.61]
 ```
+
 
 **Sample Log Line** (`log.jsonl`)
 ```json
-{"step": 424, "epoch": 1, "lr": 9.037e-05, "reduced_dim": 8, "task": "mlm", "num_samples": 64, "num_identifiers": 4, "num_tokens": 8192, "samples_by_dataset": {"reg_docs": 16, "govinfo": 16, "dockets": 16, "fdlp": 16}, "tokens_by_dataset": {"reg_docs": 2048, "govinfo": 2048, "dockets": 2048, "fdlp": 2048}, "sample_time": 0.02530217170715332, "loss": 7.4093098640441895, "forward_time": 0.014125823974609375, "backward_time": 0.004723310470581055, "optimizer_time": 0.0007536411285400391, "step_time": 0.046399831771850586, "time": "2024-10-20T12:24:45.957532"}
+{"step": 2600, "epoch": 1, "lr": 0.0002, "sample_time": 0.0018472671508789062, "reduced_dim": 64, "task": "mlm", "num_samples": 128, "num_identifiers": 2, "num_tokens": 16384, "samples_by_dataset": {"ukleg": 64, "govinfo": 64}, "tokens_by_dataset": {"ukleg": 8192, "govinfo": 8192}, "loss": 8.297395706176758, "forward_time": 0.0015826225280761719, "backward_time": 0.0047855377197265625, "clip_threshold": 3.105683786869049, "step_time": 1.8407979011535645, "total_time": 298.2537636756897, "token_rate": 119195.14296106658, "time": "2024-10-22T09:12:42.395676"}
 ```
 
 **Sample Eval Line** (`eval.jsonl`)
 ```json
-{"step": 1000, "mean": 7.500783353328705, "median": 7.503348350524902, "std": 1.1186098803630797, "min": 1.8519301414489746, "p5": 5.78562373161316, "p95": 9.532702102661133, "max": 11.14339828491211, "num_samples": 1000}
+{"step": 2600, "mean": 6.590894358307123, "median": 6.974860191345215, "std": 1.9348315678504489, "min": 0.1022321879863739, "p5": 3.3413278245925904, "p95": 8.781183547973633, "max": 13.027746200561523, "num_samples": 1000, "svd_mean_ratio_1": 2.2945302575826645, "svd_median_ratio_1": 2.4049798250198364}
 ```
 
 
@@ -72,6 +73,8 @@ Training:   1%|▌         | 1207/200000 [01:21<2:35:35, 21.29it/s, loss=5.54, l
 ![step_time_components.png](step_time_components.png)
 
 ![learning_rate_loss.png](learning_rate_loss.png)
+
+![svd_metrics.png](svd_metrics.png)
 
 
 ## License
