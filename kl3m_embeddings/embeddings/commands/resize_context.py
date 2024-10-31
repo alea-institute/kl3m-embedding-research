@@ -20,17 +20,11 @@ from transformers import AutoModel, AutoTokenizer
 
 
 def resize_model(
-    input_path: Path,
-    output_path: Path,
-    new_position_embedding_size: int = 1024
+    input_path: Path, output_path: Path, new_position_embedding_size: int = 1024
 ):
     # load the input model
-    input_tokenizer = AutoTokenizer.from_pretrained(
-        input_path
-    )
-    input_model = AutoModel.from_pretrained(
-        input_path
-    )
+    input_tokenizer = AutoTokenizer.from_pretrained(input_path)
+    input_model = AutoModel.from_pretrained(input_path)
     input_config = copy.deepcopy(input_model.config)  # type: ignore
     output_config = copy.deepcopy(input_model.config)  # type: ignore
 
@@ -66,9 +60,13 @@ def resize_model(
                     output_buffer[:, :old_position_embedding_size] = input_buffer
                 elif len(input_buffer.shape) == 4:
                     print("updating 4D buffer @ layer ", input_name)
-                    output_buffer[:, :, :old_position_embedding_size, :old_position_embedding_size] = input_buffer.view(1, -1)
+                    output_buffer[
+                        :, :, :old_position_embedding_size, :old_position_embedding_size
+                    ] = input_buffer.view(1, -1)
                 else:
-                    raise ValueError(f"Unexpected input buffer shape: {input_buffer.shape}")
+                    raise ValueError(
+                        f"Unexpected input buffer shape: {input_buffer.shape}"
+                    )
 
     # now save it to the output path
     print("saving output model")
@@ -95,10 +93,4 @@ if __name__ == "__main__":
         help="new position embedding size",
     )
     args = parser.parse_args()
-    resize_model(
-        args.input,
-        args.output,
-        args.new_position_embedding_size
-    )
-
-
+    resize_model(args.input, args.output, args.new_position_embedding_size)

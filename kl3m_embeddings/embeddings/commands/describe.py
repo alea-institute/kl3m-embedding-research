@@ -17,11 +17,12 @@ from pathlib import Path
 
 # packages
 import matplotlib.pyplot as plt
+import pandas
 import polars as pl
 import seaborn as sns
 
 
-def load_log_data(log_path: Path) -> tuple[pl.DataFrame, Counter]:
+def load_log_data(log_path: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
     Load training log data from a JSON file.
 
@@ -33,12 +34,17 @@ def load_log_data(log_path: Path) -> tuple[pl.DataFrame, Counter]:
     """
     # read the data
     parsed_data = []
-    dataset_counts: Counter[str] = Counter()
+    dataset_counter: Counter[str] = Counter()
     with open(log_path, "rt", encoding="utf-8") as input_file:
         for line in input_file:
             record = json.loads(line)
-            dataset_counts.update(record.pop("datasets", {}))
+            dataset_counter.update(record.pop("tokens_by_dataset", {}))
             parsed_data.append(record)
+
+    # get dataset count df
+    dataset_counts = pl.DataFrame(
+        list(dataset_counter.items()), schema=["dataset", "count"], orient="row"
+    )
 
     # create a Polars DataFrame
     return pl.DataFrame(parsed_data), dataset_counts
@@ -113,6 +119,9 @@ def calculate_log_statistics(log_df: pl.DataFrame) -> pl.DataFrame:
             # pl.col("step_time").std().alias("std_step_time"),
             # pl.col("step_time").min().alias("min_step_time"),
             # pl.col("step_time").max().alias("max_step_time"),
+            # get total number of tokens
+            pl.col("num_tokens").sum().alias("total_tokens_b") / 1e9,
+            # get total number by task
         ]
     )
 
@@ -191,12 +200,12 @@ def plot_loss_by_step(
 
     # now get the 100-step moving average loss and plot it
     loss_data = log_df.select(["step", "loss"]).to_pandas()
-    loss_data["rolling_mean"] = loss_data["loss"].rolling(100).mean()
+    loss_data["rolling_mean"] = loss_data["loss"].rolling(1000).mean()
     loss_data["rolling_max"] = (
-        loss_data["loss"].rolling(100).quantile(0.95).rolling(100).mean()
+        loss_data["loss"].rolling(1000).quantile(0.95).rolling(10).mean()
     )
     loss_data["rolling_min"] = (
-        loss_data["loss"].rolling(100).quantile(0.05).rolling(100).mean()
+        loss_data["loss"].rolling(1000).quantile(0.05).rolling(10).mean()
     )
 
     # plot the top and bottom lines as 50% black and fill between
@@ -422,12 +431,12 @@ def plot_learning_rate_loss(df: pl.DataFrame, output_path: Path) -> Path:
 
 
 # histogram of samples by dataset id (datasets key/values in the log)
-def plot_samples_by_dataset(df: pl.DataFrame, output_path: Path) -> Path:
+def plot_samples_by_dataset(dataset_counts: pl.DataFrame, output_path: Path) -> Path:
     """
     Plot the number of samples by dataset.
 
     Args:
-        df (pl.DataFrame): The training log data.
+        dataset_counts: pl.DataFrame
         output_path (Path): The output path for the plot.
 
     Returns:
@@ -437,17 +446,70 @@ def plot_samples_by_dataset(df: pl.DataFrame, output_path: Path) -> Path:
     sns.set_style("whitegrid")
     plt.figure(figsize=(12, 8))
 
-    # count samples by dataset id
-    dataset_counts = df.group_by("dataset_id").agg(pl.count("sample_id").alias("count"))
-
-    # plot the histogram
-    sns.barplot(x="dataset_id", y="count", data=dataset_counts.to_pandas())
-    plt.title("Samples by Dataset")
-    plt.xlabel("Dataset ID")
-    plt.ylabel("Sample Count")
+    # plot number of samples by dataset
+    sns.barplot(
+        x="dataset", y="count", data=dataset_counts.to_pandas().sort_values("count")
+    )
+    plt.title("Tokens by Dataset")
+    plt.xlabel("Dataset")
+    plt.ylabel("Count")
 
     # save the plot
     plot_path = output_path / "samples_by_dataset.png"
+    plt.savefig(plot_path)
+    plt.close()
+
+    return plot_path
+
+
+def plot_task_and_tokens(log_df: pl.DataFrame, output_path: Path) -> Path:
+    """
+    Plot the number of tokens by task.
+
+    Args:
+        log_df (pl.DataFrame): The training log data.
+        output_path (Path): The output path for the plot.
+
+    Returns:
+        Path to image with both the number of tokens over time and the nubmer of tasks by type.
+    """
+    # set up the plotting style
+    sns.set_style("whitegrid")
+    plt.figure(figsize=(12, 12))
+
+    # top plot is the histogram
+    plt.subplot(2, 1, 1)
+
+    # plot number of tokens by task
+    task_counts = log_df.group_by("task").agg(
+        pl.sum("num_tokens").alias("total_tokens")
+    )
+    task_counts = task_counts.sort("total_tokens")
+
+    # plot the histogram
+    sns.barplot(x="task", y="total_tokens", data=task_counts.to_pandas())
+    plt.title("Tokens by Task")
+    plt.xlabel("Task")
+    plt.ylabel("Total Tokens")
+
+    # bottom plot is the time series
+    plt.subplot(2, 1, 2)
+
+    # get tokens per step and accumulate expanding
+    tokens_per_step = log_df.group_by("step").agg(pl.sum("num_tokens")).sort("step")
+
+    # plot number of tokens over time
+    sns.lineplot(
+        x="step",
+        y="num_tokens",
+        data=tokens_per_step.to_pandas().expanding().sum(),
+    )
+    plt.title("Tokens Over Time")
+    plt.xlabel("Step")
+    plt.ylabel("Number of Tokens")
+
+    # save the plot
+    plot_path = output_path / "tokens_by_task.png"
     plt.savefig(plot_path)
     plt.close()
 
@@ -469,8 +531,53 @@ if __name__ == "__main__":
 
     # load the log data
     artifact_output_path = args.log_path.parent
-    log_data, _ = load_log_data(args.log_path)
+    log_data, dataset_counts = load_log_data(args.log_path)
     eval_data = load_eval_data(artifact_output_path / "eval.jsonl")
+
+    # get value counts
+    task_counts = log_data["task"].value_counts().sort("count")
+
+    # use select to get the count divided by the sum
+    print("Task Counts:")
+    print(
+        task_counts.select(
+            [
+                pl.col("task"),
+                (pl.col("count") / pl.col("count").sum()).alias("proportion"),
+            ]
+        ).sort("proportion")
+    )
+
+    # now do the dataset count
+    print("Dataset Counts:")
+    print(
+        dataset_counts.select(
+            [
+                pl.col("dataset"),
+                (pl.col("count") / pl.col("count").sum()).alias("proportion"),
+            ]
+        ).sort("proportion")
+    )
+
+    # plot step time components
+    step_time_components_plot = plot_step_time_components(
+        log_data, artifact_output_path
+    )
+    print(f"Step Time Components Plot: {step_time_components_plot}")
+
+    # plot learning rate and loss
+    lr_loss_plot = plot_learning_rate_loss(log_data, artifact_output_path)
+    print(f"Learning Rate and Loss Plot: {lr_loss_plot}")
+
+    # plot samples by dataset
+    samples_by_dataset_plot = plot_samples_by_dataset(
+        dataset_counts, artifact_output_path
+    )
+    print(f"Samples by Dataset Plot: {samples_by_dataset_plot}")
+
+    # plot task and tokens
+    task_and_tokens_plot = plot_task_and_tokens(log_data, artifact_output_path)
+    print(f"Tokens by Task Plot: {task_and_tokens_plot}")
 
     # calculate statistics
     statistics = calculate_log_statistics(log_data)
@@ -500,13 +607,3 @@ if __name__ == "__main__":
     # plot svd metrics
     svd_metrics_plot = plot_svd_metrics(eval_data, artifact_output_path)
     print(f"SVD Metrics Plot: {svd_metrics_plot}")
-
-    # plot step time components
-    step_time_components_plot = plot_step_time_components(
-        log_data, artifact_output_path
-    )
-    print(f"Step Time Components Plot: {step_time_components_plot}")
-
-    # plot learning rate and loss
-    lr_loss_plot = plot_learning_rate_loss(log_data, artifact_output_path)
-    print(f"Learning Rate and Loss Plot: {lr_loss_plot}")
