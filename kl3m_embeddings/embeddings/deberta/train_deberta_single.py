@@ -12,7 +12,7 @@ import argparse
 from math import log2
 from pathlib import Path
 from random import randint, random
-from typing import Optional
+from typing import Optional, Any
 
 # packages
 import httpx
@@ -129,7 +129,9 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
         else:
             self.model.to(dtype=precision)
 
-    def get_sample(self, device: Optional[str] = "cpu") -> dict[str, torch.Tensor]:
+    def get_sample(
+        self, device: Optional[str] = "cpu"
+    ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         """
         Get a sample for training.
 
@@ -150,18 +152,15 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
         if random() < self.matroyshka_probability:
             max_log2 = int(log2(self.model.config.hidden_size)) - 1  # type: ignore
             result["reduced_dim"] = 2 ** randint(self.matroyshka_min_log2, max_log2)
-            self.step_entry["reduced_dim"] = result["reduced_dim"]
-
-        # update step entry
-        self.step_entry.update(sample_metadata)
+            sample_metadata["reduced_dim"] = result["reduced_dim"]
 
         # handle matroyshka sampling
         if random() < self.matroyshka_probability:
             max_log2 = int(log2(self.model.config.hidden_size)) - 1  # type: ignore
             result["reduced_dim"] = 2 ** randint(self.matroyshka_min_log2, max_log2)
-            self.step_entry["reduced_dim"] = result["reduced_dim"]
+            sample_metadata["reduced_dim"] = result["reduced_dim"]
 
-        return result
+        return result, sample_metadata
 
     def load_eval_data(self, num_samples: int) -> None:
         """
@@ -180,7 +179,6 @@ class KL3MDebertaTrainer(KL3MTorchTrainer):
                 logger=self.logger,
                 device="cpu",
             )
-
             if result:
                 self.eval_samples.append(result)
 

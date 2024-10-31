@@ -130,7 +130,9 @@ class KL3MTorchTrainer(abc.ABC):
         # set up optional sample queue for models that can lookahead
         # NB: be careful if you increase this ratio, as extra samples are stored on the target device
         # by default and you may thus OOM VRAM unexpectedly.
-        self.sample_queue: queue.Queue[dict] = queue.Queue(maxsize=num_workers)
+        self.sample_queue: queue.Queue[tuple[dict, dict]] = queue.Queue(
+            maxsize=num_workers
+        )
 
         # set up a default thread pool for sampling
         self.sample_thread_pool = concurrent.futures.ThreadPoolExecutor(
@@ -500,15 +502,17 @@ class KL3MTorchTrainer(abc.ABC):
         self.tokenizer.save_pretrained(self.checkpoint_path)  # type: ignore
 
     @abc.abstractmethod
-    def get_sample(self, device: Optional[str] = None) -> dict[str, torch.Tensor]:
+    def get_sample(
+        self, device: Optional[str] = None
+    ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         """
-        Get a sample for training.
+        Get a sample and metadata for training.
 
         Args:
             device (str): The device
 
         Returns:
-            Any: The sample.
+            tuple: The sample and its metadata as separate dictionaries.
         """
 
     @abc.abstractmethod
@@ -529,24 +533,24 @@ class KL3MTorchTrainer(abc.ABC):
         except Exception as e:  # pylint: disable=broad-except
             self.log("Error adding sample to queue: %s", str(e), level="error")
 
-    def get_next_sample(self) -> dict[str, torch.Tensor]:
+    def get_next_sample(self) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         """
-        Get the next sample from the queue.
+        Get the next sample and its metadata from the queue.
 
         Returns:
-            dict[str, torch.Tensor]: The sample.
+            tuple: The sample and its metadata.
         """
         while True:
             try:
                 self.log("Queue size: %d", self.sample_queue.qsize())
-                sample = self.sample_queue.get(timeout=1)
+                sample, metadata = self.sample_queue.get(timeout=1)
             except queue.Empty:
                 self.log(
                     "Sample queue empty, hitting get_sample() directly", level="warning"
                 )
 
                 # get next sample from queue
-                sample = self.get_sample()
+                sample, metadata = self.get_sample()
             except Exception as e:  # pylint: disable=broad-except
                 # sleep and try again
                 self.log("Error getting sample from queue: %s", str(e), level="error")
@@ -562,7 +566,7 @@ class KL3MTorchTrainer(abc.ABC):
             except Exception as e:  # pylint: disable=broad-except
                 self.log("Error moving sample to device: %s", str(e), level="error")
 
-            return sample
+            return sample, metadata
 
     def load_state(self, checkpoint_path: Path) -> dict[str, int]:
         """
@@ -832,7 +836,8 @@ class KL3MTorchTrainer(abc.ABC):
                     sample_start_time = time.time()
                     while True:
                         try:
-                            sample = self.get_next_sample()
+                            sample, metadata = self.get_next_sample()
+                            self.step_entry.update(metadata)
                             break
                         except Exception as e:  # pylint: disable=broad-except
                             self.log("Error getting sample: %s", str(e), level="error")
