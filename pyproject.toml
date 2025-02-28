@@ -1,19 +1,17 @@
-[tool.poetry]
+[project]
 name = "kl3m-embedding-research"
 version = "0.1.0"
 description = "KL3M embedding model research"
-authors = ["ALEA Institute <hello@aleainstitute.ai>"]
-license = "MIT"
+authors = [{ name = "ALEA Institute", email = "hello@aleainstitute.ai" }]
+requires-python = ">=3.10,<4.0.0"
 readme = "README.md"
-homepage = "https://aleainstitute.ai/"
-repository = "https://github.com/alea-institute/kl3m-embedding-research"
-keywords = ["alea", "kl3m", "embedding", "research"]
-
-# dist build configuration
-include = ["kl3m_embeddings"]
-packages = [{ include = "kl3m_embeddings" }]
-exclude = ["tests", "docs", "examples", "docker"]
-
+license = "MIT"
+keywords = [
+    "alea",
+    "kl3m",
+    "embedding",
+    "research",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -29,48 +27,69 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Utilities"
+    "Topic :: Utilities",
+]
+dependencies = [
+    "torch>=2.5.1,<3",
+    "transformers>=4.48.0",
+    "alea-llm-client>=0.1.1,<0.2",
+    "tokenizers>=0.20.0",
+    "orjsonl>=1.0.0,<2",
+    "deepspeed>=0.15.3,<0.16",
+    "mpi4py>=4.0.1,<5",
+    "matplotlib>=3.9.2,<4",
+    "seaborn>=0.13.2,<0.14",
+    "polars>=1.12.0,<2",
+    "einops>=0.8.0,<0.9",
+    "ipython>=8.29.0,<9",
+    "openai>=1.60.1,<2",
+    "accelerate>=1.3.0,<2",
+    "wandb>=0.19.4,<0.20",
+    "pyarrow>=19.0.0",
+    "scikit-learn>=1.6.1",
+    "datasets>=3.3.0",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<4.0.0"
-torch = "^2.4.1"
-transformers = "^4.45.1"
-alea-llm-client = "^0.1.1"
-tokenizers = "^0.20.0"
+[project.urls]
+Homepage = "https://aleainstitute.ai/"
+Repository = "https://github.com/alea-institute/kl3m-embedding-research"
 
-# only used in kl3m-001
-orjsonl = {version = "^1.0.0", optional = true}
-deepspeed = "^0.15.2"
-mpi4py = "^4.0.1"
-matplotlib = "^3.9.2"
-seaborn = "^0.13.2"
-polars = "^1.9.0"
+[dependency-groups]
+dev = [
+    "pytest>=8.3.2,<9",
+    "pytest-asyncio>=0.23.8,<0.24",
+    "pytest-benchmark>=4.0.0,<5",
+    "pytest-cov>=5.0.0,<6",
+    "pylint>=3.2.7,<4",
+]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "kl3m_embeddings",
+    "kl3m_embeddings",
+]
+exclude = [
+    "tests",
+    "docs",
+    "examples",
+    "docker",
+]
 
-[tool.poetry.group.dev.dependencies]
-types-lxml = "^2024.8.7"
-sphinx = "^7.4.7"
-black = "^24.8.0"
-myst-parser = "^3.0.1"
-sphinx-book-theme = "^1.1.3"
-sphinxcontrib-mermaid = "^0.9.2"
-pytest = "^8.3.2"
-pytest-asyncio = "^0.23.8"
-pytest-benchmark = "^4.0.0"
-pytest-cov = "^5.0.0"
-pylint = "^3.2.7"
-sphinx-copybutton = "^0.5.2"
-sphinxext-opengraph = "^0.9.1"
-sphinx-plausible = "^0.1.2"
-
-# extras
-[tool.poetry.extras]
-
+[tool.hatch.build.targets.wheel]
+include = [
+    "kl3m_embeddings",
+    "kl3m_embeddings",
+]
+exclude = [
+    "tests",
+    "docs",
+    "examples",
+    "docker",
+]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.pylint]
 max-line-length = 120
