@@ -1,29 +1,33 @@
 """
-Wrapped Roberta model that overrides the .forward() method with an additional
+Wrapped Roberta model that does two things:
+
+1. overrides the .forward() method with an additional
 `reduced_dim` parameter to support training "frontloaded" or hierarchical models.
+
+2. fixes the position_ids issue in the original port from fairseq
 
 This is vendored from transformers/models/roberta/modeling_roberta.py.
 """
 # leave huggingface code alone for comparison
 # type: ignore
-# pylint: disable=no-else-raise,too-many-ancestors,too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
+# pylint: disable=no-else-raise,too-many-ancestors,too-many-arguments,too-many-positional-arguments
 
 # imports
-from typing import List, Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 
 # packages
 import torch
 from torch.nn import CrossEntropyLoss
-from transformers import RobertaForMaskedLM, RobertaModel
 
 # project
+from transformers import RobertaForMaskedLM, RobertaModel
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_attention_mask_for_sdpa,
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from transformers.modeling_outputs import (
-    BaseModelOutputWithPoolingAndCrossAttentions,
     MaskedLMOutput,
+    BaseModelOutputWithPoolingAndCrossAttentions,
 )
 from transformers.models.roberta.modeling_roberta import RobertaLMHead
 
@@ -102,13 +106,8 @@ class MatroyshkaRobertaModel(RobertaModel):
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
-        # check that reduced_dim is >0 and <hidden_size if not none
-        if reduced_dim is not None:
-            if reduced_dim <= 0 or reduced_dim >= self.config.hidden_size:
-                raise ValueError("reduced_dim must be >0 and <hidden_size")
-
         batch_size, seq_length = input_shape
-        device = input_ids.device if input_ids is not None else inputs_embeds.device  # type: ignore
+        device = input_ids.device if input_ids is not None else inputs_embeds.device
 
         # past_key_values_length
         past_key_values_length = (
@@ -138,6 +137,7 @@ class MatroyshkaRobertaModel(RobertaModel):
         # if reduced dim is provided, then zero the elements after reduced_dim in the embedding_output
         if reduced_dim is not None:
             embedding_output[:, :, reduced_dim:] = 0
+            embedding_output = torch.sign(embedding_output)
 
         if attention_mask is None:
             attention_mask = torch.ones(
@@ -281,6 +281,13 @@ class MatroyshkaRobertaForMaskedLM(RobertaForMaskedLM):
         """
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
+        )
+
+        position_ids = torch.arange(
+            0,
+            self.roberta.config.max_position_embeddings,
+            dtype=torch.long,
+            device=input_ids.device,
         )
 
         outputs = self.roberta(
