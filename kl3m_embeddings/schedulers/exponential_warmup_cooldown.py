@@ -65,6 +65,7 @@ class ExponentialWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         self.current_step = 0
         self.lr = start_lr
         self.end_lr = end_lr
+        self._last_lr = start_lr
 
         # calculate phase step counts
         self.steps_in_phase = 0
@@ -101,6 +102,7 @@ class ExponentialWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         """
         # check phase and step
         phase = self.get_current_phase()
+        self._last_lr = self.lr
         lr = self.lr
         if phase == "warmup" and self.steps_in_phase >= self.warmup_steps_per_period:
             lr *= self.warmup_factor

@@ -58,6 +58,7 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         # get state values
         self.current_step = 0
         self.current_lr = start_lr
+        self._last_lr = start_lr
 
         # call the parent
         super().__init__(optimizer, self.get_lr, last_epoch=last_epoch)
@@ -90,6 +91,8 @@ class LinearWarmupCooldownScheduler(torch.optim.lr_scheduler.LambdaLR):
         """
         # get the phase
         phase = self.get_current_phase()
+
+        self._last_lr = self.current_lr
 
         # set the learning rate
         if phase == "warmup":
