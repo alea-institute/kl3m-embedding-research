@@ -1,9 +1,9 @@
 """
-Train a kl3m roberta model with given configuration on a single node, single GPU setup
+Train a kl3m deberta model with given configuration on a single node, single GPU setup
 with pure torch.  transformers is only used to load the model architecture and tokenizer.
 
 Note that these models are trained with Matroyshka-style dimensionality reduction, but
-they can be used with the standard Roberta huggingface architecture on the normal
+they can be used with the standard DebertaV2 huggingface architecture on the normal
 .forward() after training without any issues.
 """
 
@@ -17,24 +17,25 @@ from typing import Optional, Any
 # packages
 import httpx
 import torch
-from transformers import PreTrainedTokenizerFast, RobertaConfig
+from transformers import DebertaV2Config, PreTrainedTokenizerFast
 
 # project
-from kl3m_embeddings.embeddings.roberta.matroyshka_roberta import (
-    MatroyshkaRobertaForMaskedLM,
+from kl3m_embeddings.models.deberta.matroyshka_deberta import (
+    MatroyshkaDebertaV2ForMaskedLM,
 )
-from kl3m_embeddings.embeddings.samples.embedding import get_embedding_sample
-from kl3m_embeddings.embeddings.trainer import KL3MTorchTrainer
+from kl3m_embeddings.models.samples import get_embedding_sample
+from kl3m_embeddings.models.trainer import KL3MTorchTrainer
+from kl3m_embeddings.optimizers.muon_modified import Muon
 from kl3m_embeddings.utils.models import get_model_size_str
 
 # constants
-DEFAULT_TOKENIZER = "alea-institute/kl3m-003-64k"
+DEFAULT_TOKENIZER = "alea-institute/kl3m-004-128k-uncased"
 DEFAULT_ENDPOINT = "http://localhost:8000"
 
 
-class KL3MRobertaTrainer(KL3MTorchTrainer):
+class KL3MDebertaTrainer(KL3MTorchTrainer):
     """
-    Trainer for kl3m roberta model.
+    Trainer for kl3m deberta model.
     """
 
     def __init__(
@@ -98,7 +99,7 @@ class KL3MRobertaTrainer(KL3MTorchTrainer):
         # try to load from the checkpoint path
         if self.checkpoint_path.exists():
             try:
-                self.model = MatroyshkaRobertaForMaskedLM.from_pretrained(
+                self.model = MatroyshkaDebertaV2ForMaskedLM.from_pretrained(
                     self.checkpoint_path,
                     torch_dtype=precision,
                 )
@@ -110,14 +111,14 @@ class KL3MRobertaTrainer(KL3MTorchTrainer):
 
         if self.model is None:
             # load from config path
-            model_config = RobertaConfig.from_pretrained(
+            model_config = DebertaV2Config.from_pretrained(
                 self.config_path,
                 torch_dtype=precision,
             )
 
             # set the vocab size and max position embeddings
             model_config.vocab_size = len(self.tokenizer)
-            self.model = MatroyshkaRobertaForMaskedLM(model_config)
+            self.model = MatroyshkaDebertaV2ForMaskedLM(model_config)
             self.model.train()
 
             self.log("Created model from config.")
@@ -128,6 +129,33 @@ class KL3MRobertaTrainer(KL3MTorchTrainer):
             self.model.to(dtype=precision).to(self.device)
         else:
             self.model.to(dtype=precision)
+
+    def setup_optimizer(self) -> None:
+        """Get the optimizer."""
+        # Set up optimizer after DDP wrapping
+        optimizer_config = self.training_config.get("optimizer", {})
+
+        # sort params by optimizer
+        muon_params = []
+        adamw_params = []
+        for name, param in self.model.named_parameters():
+            if "embed" in name or "head" in name or param.ndim < 2:
+                adamw_params.append(param)
+            else:
+                muon_params.append(param)
+
+        self.optimizer = Muon(
+            muon_params,
+            lr=optimizer_config.get("muon_lr", 0.001),
+            momentum=optimizer_config.get("momentum", 0.95),
+            adamw_params=adamw_params,
+            adamw_lr=optimizer_config.get("peak_lr", 3e-4),
+            adamw_betas=(
+                optimizer_config.get("adamw_beta1", 0.9),
+                optimizer_config.get("adamw_beta2", 0.95),
+            ),
+            adamw_wd=optimizer_config.get("adamw_wd", 0.01),
+        )
 
     def get_sample(
         self, device: Optional[str] = "cpu"
@@ -179,7 +207,6 @@ class KL3MRobertaTrainer(KL3MTorchTrainer):
                 logger=self.logger,
                 device="cpu",
             )
-
             if result:
                 self.eval_samples.append(result)
 
@@ -187,7 +214,7 @@ class KL3MRobertaTrainer(KL3MTorchTrainer):
 if __name__ == "__main__":
     # set up args
     parser = argparse.ArgumentParser(
-        description="Train a roberta model with given configuration."
+        description="Train a deberta model with given configuration."
     )
     parser.add_argument(
         "config_path", type=Path, help="Path to the model configuration"
@@ -204,7 +231,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # create the trainer
-    trainer = KL3MRobertaTrainer(
+    trainer = KL3MDebertaTrainer(
         config_path=args.config_path,
         checkpoint_path=args.checkpoint_path,
     )
