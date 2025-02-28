@@ -12,14 +12,16 @@ $ python3 kl3m_embeddings/embeddings/commands/average_models.py \
     model1:10 model2:80 model3:10 output_model
 """
 
-
 # imports
 import argparse
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict
 
 # packages
-from transformers import PreTrainedModel, AutoModel, AutoTokenizer
+from transformers import (
+    AutoTokenizer,
+    RobertaForMaskedLM,
+)
 
 
 def average_models(model_path_weights: Dict[Path, float], output_path: Path) -> Path:
@@ -41,27 +43,27 @@ def average_models(model_path_weights: Dict[Path, float], output_path: Path) -> 
     # add the layers together
     for model_path, model_weight in model_path_weights.items():
         print(f"Loading model from {model_path}")
-        model = AutoModel.from_pretrained(model_path)
+
+        # NOTE: must use task-specific model if you want all layers and config safely
+        model = RobertaForMaskedLM.from_pretrained(model_path)
 
         if current_average_model is None:
-            # set
-            current_average_model = model
+            current_average_model = model.__class__(model.config)
+            current_average_model.load_state_dict(model.state_dict())
             tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-            # reweight
-            for name, param in current_average_model.named_parameters():
-                current_average_model.state_dict()[name] *= model_weight
+            # Initialize buffers
+            for layer_name, layer_data in current_average_model.state_dict().items():
+                print(f"{model_path}: Layer {layer_name}: {layer_data.shape}")
+                current_average_model.state_dict()[layer_name] *= model_weight
         else:
             # iterate through state dict
-            for name, param in model.named_parameters():
-                if name in current_average_model.state_dict():
-                    # add the parameters
-                    current_average_model.state_dict()[name] += model_weight * param.data
-                else:
-                    print(f"Layer {name} not found in current model.")
-
-                # output layer shape and current mean value
-                print(f"Layer {name}: {param.data.shape}, {param.data.mean()}")
+            for layer_name, layer_data in current_average_model.state_dict().items():
+                # add the parameters
+                print(f"{model_path}: Layer {layer_name}: {layer_data.shape}")
+                current_average_model.state_dict()[layer_name] += (
+                    model_weight * model.state_dict()[layer_name]
+                )
 
     # save the model with the tokenizer
     output_path.mkdir(parents=True, exist_ok=True)
@@ -76,9 +78,15 @@ def main():
     Main method for the script.
     """
     # parse the arguments
-    parser = argparse.ArgumentParser(description="Average two models by adding their layers together and dividing by the number of models.")
-    parser.add_argument("model_paths", type=str, nargs="+", help="The paths to the models.")
-    parser.add_argument("output_path", type=Path, help="The output path for the averaged model.")
+    parser = argparse.ArgumentParser(
+        description="Average two models by adding their layers together and dividing by the number of models."
+    )
+    parser.add_argument(
+        "model_paths", type=str, nargs="+", help="The paths to the models."
+    )
+    parser.add_argument(
+        "output_path", type=Path, help="The output path for the averaged model."
+    )
     args = parser.parse_args()
 
     # model paths and weights
@@ -92,7 +100,7 @@ def main():
         else:
             model_path_weights[Path(model_path)] = 1.0 / num_models
 
-    print(f"Averaging models:")
+    print("Averaging models:")
     for model_path, weight in model_path_weights.items():
         print(f"  {model_path}: {weight}")
 

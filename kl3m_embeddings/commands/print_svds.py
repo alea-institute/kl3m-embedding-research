@@ -9,7 +9,7 @@ import argparse
 from transformers import AutoModel
 
 # project
-from kl3m_embeddings.embeddings.stats.svds import get_model_svd_stats
+from kl3m_embeddings.stats.svds import get_model_svd_stats
 
 if __name__ == "__main__":
     # parse args to input path

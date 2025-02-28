@@ -17,7 +17,6 @@ from pathlib import Path
 
 # packages
 import matplotlib.pyplot as plt
-import pandas
 import polars as pl
 import seaborn as sns
 
@@ -38,7 +37,12 @@ def load_log_data(log_path: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
     with open(log_path, "rt", encoding="utf-8") as input_file:
         for line in input_file:
             record = json.loads(line)
-            dataset_counter.update(record.pop("tokens_by_dataset", {}))
+            if "task" not in record:
+                record["task"] = "unknown"
+            if "dataset" in record:
+                dataset_counter.update(record.pop("unknown"))
+            if "tokens_by_dataset" in record:
+                dataset_counter.update(record.pop("tokens_by_dataset", {}))
             parsed_data.append(record)
 
     # get dataset count df
@@ -478,7 +482,7 @@ def plot_task_and_tokens(log_df: pl.DataFrame, output_path: Path) -> Path:
     plt.figure(figsize=(12, 12))
 
     # top plot is the histogram
-    plt.subplot(2, 1, 1)
+    plt.subplot(3, 1, 1)
 
     # plot number of tokens by task
     task_counts = log_df.group_by("task").agg(
@@ -493,7 +497,7 @@ def plot_task_and_tokens(log_df: pl.DataFrame, output_path: Path) -> Path:
     plt.ylabel("Total Tokens")
 
     # bottom plot is the time series
-    plt.subplot(2, 1, 2)
+    plt.subplot(3, 1, 2)
 
     # get tokens per step and accumulate expanding
     tokens_per_step = log_df.group_by("step").agg(pl.sum("num_tokens")).sort("step")
@@ -508,8 +512,67 @@ def plot_task_and_tokens(log_df: pl.DataFrame, output_path: Path) -> Path:
     plt.xlabel("Step")
     plt.ylabel("Number of Tokens")
 
+    # bottom plot is the distribution of per-step tokens
+    plt.subplot(3, 1, 3)
+
+    # plot the histogram
+    sns.histplot(tokens_per_step["num_tokens"], bins=50)
+    plt.title("Tokens Per Step")
+    plt.xlabel("Number of Tokens")
+    plt.ylabel("Count")
+
     # save the plot
     plot_path = output_path / "tokens_by_task.png"
+    plt.savefig(plot_path)
+    plt.close()
+
+    return plot_path
+
+
+def plot_loss_hist_by_task(log_df: pl.DataFrame, output_path: Path) -> Path:
+    """
+    Plot the loss histogram by task, with one subpanel
+    for each task detected.
+
+    Args:
+        log_df (pl.DataFrame): The training log data.
+        output_path (Path): The output path for the plot.
+
+    Returns:
+        Path to image with the loss histogram by task.
+    """
+
+    # get the unique tasks
+    tasks = log_df["task"].unique().to_list()
+
+    # get the loss values for each task
+    task_losses = {}
+    for task in tasks:
+        task_losses[task] = log_df.filter(pl.col("task") == task)["loss"].to_numpy()
+
+    # get the min and max loss values so we can fix the x-axis across subplots
+    min_loss = min([min(task_losses[task]) for task in tasks])
+    max_loss = max([max(task_losses[task]) for task in tasks])
+
+    # set up the plotting style
+    sns.set_style("whitegrid")
+    f = plt.figure(figsize=(12, 3 * len(tasks)))
+    f.suptitle("Loss Histogram by Task")
+    f.tight_layout()
+
+    # get order sorted by task name
+    tasks = sorted(tasks)
+
+    # plot the loss histogram by task
+    for i, task in enumerate(tasks):
+        plt.subplot(len(tasks), 1, i + 1)
+        sns.histplot(task_losses[task], bins=50)
+        plt.title(task)
+        plt.ylabel("Count")
+        plt.xlim(min_loss, max_loss)
+
+    # save the plot
+    plot_path = output_path / "loss_hist_by_task.png"
     plt.savefig(plot_path)
     plt.close()
 
@@ -550,24 +613,31 @@ if __name__ == "__main__":
 
     # now do the dataset count
     print("Dataset Counts:")
-    print(
-        dataset_counts.select(
-            [
-                pl.col("dataset"),
-                (pl.col("count") / pl.col("count").sum()).alias("proportion"),
-            ]
-        ).sort("proportion")
-    )
+    try:
+        print(
+            dataset_counts.select(
+                [
+                    pl.col("dataset"),
+                    (pl.col("count") / pl.col("count").sum()).alias("proportion"),
+                ]
+            ).sort("proportion")
+        )
+    except Exception as e:
+        print(f"Error calculating dataset counts: {e}")
+
+    # plot loss by task
+    loss_hist_by_task_plot = plot_loss_hist_by_task(log_data, artifact_output_path)
+    print(f"Loss Histogram by Task Plot: {loss_hist_by_task_plot}")
+
+    # plot learning rate and loss
+    lr_loss_plot = plot_learning_rate_loss(log_data, artifact_output_path)
+    print(f"Learning Rate and Loss Plot: {lr_loss_plot}")
 
     # plot step time components
     step_time_components_plot = plot_step_time_components(
         log_data, artifact_output_path
     )
     print(f"Step Time Components Plot: {step_time_components_plot}")
-
-    # plot learning rate and loss
-    lr_loss_plot = plot_learning_rate_loss(log_data, artifact_output_path)
-    print(f"Learning Rate and Loss Plot: {lr_loss_plot}")
 
     # plot samples by dataset
     samples_by_dataset_plot = plot_samples_by_dataset(

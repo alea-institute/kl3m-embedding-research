@@ -15,8 +15,10 @@ import copy
 from pathlib import Path
 
 # packages
-import torch
-from transformers import AutoModel, AutoTokenizer
+from transformers import (
+    AutoTokenizer,
+    RobertaForMaskedLM,
+)
 
 
 def resize_model(
@@ -24,25 +26,42 @@ def resize_model(
 ):
     # load the input model
     input_tokenizer = AutoTokenizer.from_pretrained(input_path)
-    input_model = AutoModel.from_pretrained(input_path)
+
+    # NOTE: must use task-specific model if you want all layers and config safely
+    input_model = RobertaForMaskedLM.from_pretrained(input_path)
     input_config = copy.deepcopy(input_model.config)  # type: ignore
     output_config = copy.deepcopy(input_model.config)  # type: ignore
 
     # extend the max position embeddings
     old_position_embedding_size = input_config.max_position_embeddings
     output_config.max_position_embeddings = new_position_embedding_size
+    # check if we have a position_buckets field
+    if hasattr(output_config, "position_buckets"):
+        output_config.position_buckets = new_position_embedding_size
     print(f"old position embedding size: {old_position_embedding_size}")
     print(f"new position embedding size: {new_position_embedding_size}")
 
     # set dynamic rope scaling
     # output_config.rope_scaling = {"type": "linear",  "factor": 8.0}
 
-    # create the new model
-    output_model = AutoModel.from_config(output_config)
+    output_model = RobertaForMaskedLM(output_config)
 
-    # update the output model state dict from the input model
-    print("updating output model state dict")
-    output_model.load_state_dict(input_model.state_dict())
+    # copy state dict
+    for key, value in input_model.state_dict().items():
+        try:
+            # check identical dimensions
+            if (
+                input_model.state_dict()[key].shape
+                == output_model.state_dict()[key].shape
+            ):
+                print(f"copying {key} with shape {input_model.state_dict()[key].shape}")
+                output_model.state_dict()[key] = value
+            else:
+                print(
+                    f"skipping {key} with shape {input_model.state_dict()[key].shape}"
+                )
+        except Exception as e:
+            print("error copying", key, e)
 
     # update the output model buffers from the input model
     print("updating output model buffers")
